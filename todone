@@ -339,8 +339,11 @@ PICK_AWK=$AWK_LIB'
 		return 1
 	}
 	BEGIN { FS = "\t"; q = ENVIRON["Q"]; sel = ENVIRON["SEL"] + 0 }
-	fz($2, q) { m++; val[m] = $1; lab[m] = $2; pv[m] = $3 }
+	# exact substring matches rank above loose fuzzy ones; input order otherwise
+	index(tolower($2), tolower(q)) { m++; val[m] = $1; lab[m] = $2; pv[m] = $3; next }
+	fz($2, q) { f++; fv[f] = $1; fl[f] = $2; fp[f] = $3 }
 	END {
+		for (i = 1; i <= f; i++) { m++; val[m] = fv[i]; lab[m] = fl[i]; pv[m] = fp[i] }
 		if (sel > m) sel = m; if (sel < 1) sel = 1
 		if (ENVIRON["MODE"] == "get") { if (m) print val[sel]; exit }
 		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0
