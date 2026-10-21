@@ -48,7 +48,7 @@ keys() { for k in "$@"; do sleep 0.3; printf '%b' "$k"; done; sleep 0.3; }
 # of row 24, and task 1's marker at column 4 of row 3.
 click() { printf '\\033[<0;%s;%sM\\033[<0;%s;%sm' "$1" "$2" "$1" "$2"; }
 keys n 'one\n' A 'two\n' 'three\n' '\n' g x z x e ' more\n' n zzz '\033' s wo rk '\n' n 'ship\n' \
-	"$(click 10 24)" / thr '\n' d "$(click 4 3)" 2 c q |
+	"$(click 10 24)" / ree '\n' d "$(click 4 3)" 2 c q |
 	pty sh "$T" >/dev/null 2>&1 || true
 has tui/inbox.md '- [ ] one more'
 ! grep -q zzz tui/inbox.md || fail 'esc should cancel'

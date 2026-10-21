@@ -3,6 +3,10 @@
 A tiny todo list for the macOS terminal. One POSIX `sh` file, no dependencies.
 Tasks are plain Markdown checkboxes (`- [ ] task`), so you can read and edit them anywhere.
 
+![todone demo](demo/demo.gif)
+
+[Watch as MP4](demo/demo.mp4). Re-record with `vhs demo/demo.tape` ([vhs](https://github.com/charmbracelet/vhs)).
+
 ## Install
 
 ```sh
