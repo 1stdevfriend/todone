@@ -1,0 +1,641 @@
+#!/bin/sh
+# todone - per-directory and global todo lists, stored as Markdown checkboxes.
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -eu
+
+HOME_DIR=${TODONE_HOME:-"$HOME/.todone"}
+TABS="$HOME_DIR/.tabs"
+LOCAL_NAME=TODO.md
+
+die() { printf 'todone: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+	cat <<'EOF'
+usage: todone [-w LIST] [COMMAND] [ARGS]
+
+  (none)         open the TUI (plain list when not in a terminal)
+  l              list tasks
+  n TEXT         new task
+  e N TEXT       edit task N (no args: open the list in $EDITOR)
+  x N            tick / untick task N
+  d N            delete task N
+  s              show all lists
+  init           keep this directory's list in ./TODO.md instead
+  h              this help
+
+Which list: a TODO.md in this directory (or any parent) first, otherwise
+the list named after this directory, kept in ~/.todone ("inbox" in $HOME).
+-w LIST runs one command against any list, e.g.
+  todone -w inbox n "call the dentist"
+
+TUI keys: press ? inside the TUI.
+EOF
+}
+
+valid_name() {
+	case $1 in '' | */* | .*) return 1 ;; esac
+}
+
+# Nearest TODO.md from cwd upward, the way git finds .git.
+find_local() {
+	d=$PWD
+	while :; do
+		[ -f "$d/$LOCAL_NAME" ] && { printf '%s\n' "$d/$LOCAL_NAME"; return 0; }
+		[ "$d" = / ] && return 1
+		d=$(dirname "$d")
+	done
+}
+
+# List named after the current directory; inbox at $HOME or /.
+# ponytail: same-named directories share a list; key by full path if that bites.
+dir_list() {
+	[ "$PWD" = "$HOME" ] || [ "$PWD" = / ] && { echo inbox; return 0; }
+	nm=$(basename "$PWD" | sed 's/^\.*//')
+	printf '%s\n' "${nm:-inbox}"
+}
+
+# CURV identifies the open list: a list name, or a TODO.md path.
+use_global() { WS=$1; FILE="$HOME_DIR/$1.md"; CURV=$1; }
+use_local() { FILE=$1; WS="$(dirname "$1" | sed "s|^$HOME|~|")/$LOCAL_NAME"; CURV=$1; }
+
+list() {
+	printf '== %s ==\n' "$WS"
+	[ -f "$FILE" ] || { echo '  (empty)'; return 0; }
+	color=0
+	[ -t 1 ] && [ -z "${NO_COLOR:-}" ] && color=1
+	C=$color awk '
+		/^#/ { print; next }
+		/^- \[[ xX]\] / {
+			n++
+			done = substr($0, 4, 1) != " "
+			line = sprintf("%3d [%s] %s", n, done ? "x" : " ", substr($0, 7))
+			if (done && ENVIRON["C"] == 1) line = "\033[2;9m" line "\033[0m"
+			print line
+		}
+		END { if (!n) print "  (empty)" }' "$FILE"
+}
+
+# Collapse newlines so one task stays one line.
+oneline() { printf '%s' "$*" | tr '\n' ' '; }
+
+add() {
+	[ $# -gt 0 ] || die 'usage: n TEXT'
+	mkdir -p "$(dirname "$FILE")"
+	printf -- '- [ ] %s\n' "$(oneline "$*")" >>"$FILE"
+}
+
+# rewrite N toggle|delete|edit [TEXT] - other lines are kept untouched.
+rewrite() {
+	case $1 in '' | *[!0-9]*) die "not a task number: '$1'" ;; esac
+	[ -f "$FILE" ] || die "no task #$1"
+	tmp="$FILE.tmp.$$"
+	N=$1 ACT=$2 TEXT=${3:-} awk '
+		/^- \[[ xX]\] / && ++i == ENVIRON["N"] {
+			hit = 1
+			if (ENVIRON["ACT"] == "delete") next
+			if (ENVIRON["ACT"] == "toggle")
+				$0 = "- [" (substr($0, 4, 1) == " " ? "x" : " ") "]" substr($0, 6)
+			else
+				$0 = substr($0, 1, 6) ENVIRON["TEXT"]
+		}
+		{ print }
+		END { exit !hit }' "$FILE" >"$tmp" || { rm -f "$tmp"; die "no task #$1"; }
+	mv "$tmp" "$FILE"
+}
+
+lists() {
+	for f in "$HOME_DIR"/*.md; do
+		[ -e "$f" ] || continue
+		w=$(basename "$f" .md)
+		if [ "$w" = "$CURV" ]; then echo "* $w"; else echo "  $w"; fi
+	done
+}
+
+# ---------------------------------------------------------------- TUI
+
+ESC=$(printf '\033')
+CN=$(printf '\016') CP=$(printf '\020') TAB=$(printf '\t')
+CU=$(printf '\025') CW=$(printf '\027')
+BS=$(printf '\010') DEL=$(printf '\177')
+NL='
+'
+# xterm click/wheel reports in SGR form (ESC [ < b ; x ; y M)
+MOUSE_ON="${ESC}[?1000h${ESC}[?1006h" MOUSE_OFF="${ESC}[?1000l${ESC}[?1006l"
+# Powerline arrow; needs a Nerd/Powerline font. TODONE_SEP='' for plain blocks.
+SEP=${TODONE_SEP-$(printf '\356\202\260')}
+# Shown right-aligned in order; hints that do not fit are dropped.
+HINTS='? help|n new|A many|e edit|x tick|d del|z undo|/ find|s open|tab next|c close|q quit'
+
+# One keypress; arrows come back as UP/DOWN/LEFT/RIGHT, shift-tab as BTAB,
+# Enter as '', a mouse press as "MOUSE button;col;row", anything else unknown as IGNORE.
+key() {
+	k=$(dd bs=1 count=1 2>/dev/null)
+	if [ "$k" = "$ESC" ]; then
+		stty min 0 time 1
+		s=$(dd bs=1 count=2 2>/dev/null)
+		case $s in
+		'[A' | OA) k=UP ;; '[B' | OB) k=DOWN ;; '[C' | OC) k=RIGHT ;; '[D' | OD) k=LEFT ;; '[Z') k=BTAB ;;
+		'[<')
+			m=
+			while c=$(dd bs=1 count=1 2>/dev/null) && [ -n "$c" ]; do
+				case $c in M | m) break ;; esac
+				m=$m$c
+			done
+			if [ "$c" = M ]; then k="MOUSE $m"; else k=IGNORE; fi
+			;;
+		esac
+		stty min 1 time 0
+	fi
+	printf '%s' "$k"
+}
+
+# Split a "button;col;row" mouse report into MB MX MY.
+mouse_xy() { MB=${1%%;*} MR=${1#*;}; MX=${MR%%;*} MY=${MR#*;}; }
+
+size() {
+	sz=$(stty size 2>/dev/null) || sz=
+	ROWS=${sz% *} COLS=${sz#* }
+	case $ROWS in '' | *[!0-9]* | [0-9]) ROWS=24 ;; esac
+	case $COLS in '' | *[!0-9]* | ? | [1-3]?) COLS=80 ;; esac
+}
+
+short() { case $1 in /*) basename "$(dirname "$1")" ;; *) printf '%s' "$1" ;; esac; }
+
+# Shared by every awk below.
+AWK_LIB='function rep(s, k,   r) { r = ""; while (k-- > 0) r = r s; return r }'
+
+tabbar() {
+	s="${ESC}[48;5;236m${ESC}[1;38;5;150m todone ${ESC}[22m"
+	i=0
+	[ -f "$TABS" ] && while IFS= read -r v && [ $i -lt 9 ]; do
+		i=$((i + 1))
+		c=189
+		[ "$v" = "$CURV" ] && c=150
+		s="$s${ESC}[38;5;236;48;5;${c}m$SEP${ESC}[38;5;235m $i $(short "$v") ${ESC}[38;5;${c};48;5;236m$SEP"
+	done <"$TABS"
+	printf '%s' "$s${ESC}[K${ESC}[0m"
+}
+
+DRAW_AWK=$AWK_LIB'
+	BEGIN { cur = ENVIRON["CUR"] + 0; top = ENVIRON["TOP"] + 0
+		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0; h = rows - 4 }
+	/^- \[[ xX]\] / { n++; d[n] = substr($0, 4, 1) != " "; t[n] = substr($0, 7); nd += d[n] }
+	END {
+		if (cur > n) cur = n; if (cur < 1) cur = 1
+		if (cur <= top) top = cur - 1; if (cur > top + h) top = cur - h; if (top < 0) top = 0
+		# hint buttons, right-aligned; their columns go back to the shell for clicks
+		msg = ENVIRON["MSG"]
+		nh = split(ENVIRON["HINTS"], hs, "|"); used = 0
+		for (i = 1; i <= nh; i++) {
+			if (used + length(hs[i]) + 2 > cols - length(msg) - 3) break
+			used += length(hs[i]) + 2; nk = i
+		}
+		x = cols - used; if (x < length(msg) + 3) x = length(msg) + 3
+		pos = x; col = ""; spans = ""
+		for (i = 1; i <= nk; i++) {
+			sp = index(hs[i], " ")
+			col = col "  \033[38;5;189m" substr(hs[i], 1, sp) "\033[38;5;243m" substr(hs[i], sp + 1)
+			spans = spans substr(hs[i], 1, sp - 1) ":" (pos + 2) ":" (pos + 1 + length(hs[i])) ","
+			pos += length(hs[i]) + 2
+		}
+		print cur, top, n + 0, spans
+		printf "\033[H\033[2J\033[1;38;5;189m  %s\033[0m", ENVIRON["WS"]
+		if (n) {
+			p = nd "/" n " done  "; w = 12; f = int(nd * w / n)
+			printf "\033[%dG\033[38;5;245m%s\033[38;5;150m%s\033[38;5;238m%s\033[0m", cols - length(p) - w, p, rep("━", f), rep("━", w - f)
+		}
+		printf "\n\n"
+		if (!n) {
+			e = "nothing here - press n to add a task"
+			printf "\033[%d;%dH\033[38;5;245m%s\033[0m", int(rows / 2), int((cols - length(e)) / 2) + 1, e
+		}
+		for (i = top + 1; i <= n && i <= top + h; i++) {
+			pre = i == cur ? "\033[48;5;237m\033[38;5;189m ▌ " : "   "
+			mk = d[i] ? "\033[38;5;150m✓" : "\033[38;5;245m○"
+			tx = d[i] ? "\033[38;5;242;9m" : (i == cur ? "\033[1;39m" : "\033[39m")
+			printf "%s%s %s%s\033[K\033[0m\n", pre, mk, tx, t[i]
+		}
+		printf "\033[%d;1H\033[38;5;222m %s\033[0m", rows - 1, msg
+		printf "\033[%dG%s\033[0m", x, col
+		printf "\033[%d;1H%s", rows, ENVIRON["BAR"]
+	}'
+
+draw() {
+	size
+	f=$FILE
+	[ -f "$f" ] || f=/dev/null
+	out=$(CUR=$cur TOP=$top ROWS=$ROWS COLS=$COLS WS=$WS MSG=$msg HINTS=$HINTS BAR=$(tabbar) awk "$DRAW_AWK" "$f")
+	set -- ${out%%"$NL"*}
+	cur=$1 top=$2 n=$3 SPANS=${4:-}
+	printf '%s' "${out#*"$NL"}"
+}
+
+# Column of the tab bar -> tab number (layout mirrors tabbar).
+tab_at() {
+	[ -f "$TABS" ] || return 0
+	sw=0
+	[ -n "$SEP" ] && sw=1
+	x=9 i=0
+	while IFS= read -r v && [ $i -lt 9 ]; do
+		i=$((i + 1))
+		lab=$(short "$v")
+		e=$((x + 2 * sw + ${#lab} + 3))
+		[ "$1" -ge "$x" ] && [ "$1" -le "$e" ] && { echo $i; return 0; }
+		x=$((e + 1))
+	done <"$TABS"
+}
+
+# Column of the hint line -> the key that hint stands for.
+hint_at() { printf '%s' "$SPANS" | awk -v RS=, -F : -v x="$1" '$2 <= x+0 && x+0 <= $3 { print $1 }'; }
+
+# Turn a click or wheel event in the main view into a key (or just move the cursor).
+mouse() {
+	mouse_xy "$1"
+	k=
+	case $MB in
+	64) k=k ;;
+	65) k=j ;;
+	0)
+		if [ "$MY" -eq "$ROWS" ]; then
+			k=$(tab_at "$MX")
+		elif [ "$MY" -eq $((ROWS - 1)) ]; then
+			k=$(hint_at "$MX")
+			[ "$k" = tab ] && k=$TAB
+		elif [ "$MY" -ge 3 ] && [ "$MY" -le $((ROWS - 2)) ] && [ $((top + MY - 2)) -le "$n" ]; then
+			i=$((top + MY - 2))
+			if [ "$MX" -le 5 ]; then cur=$i k=x
+			elif [ "$i" = "$cur" ]; then k=e
+			else cur=$i; fi
+		fi
+		;;
+	esac
+}
+
+# Centered floating box: one stdin line per body row. With MI=1 it adds an
+# input row and leaves the cursor there.
+MODAL_AWK=$AWK_LIB'
+	function row(r, text) {
+		printf "\033[%d;%dH\033[38;5;189m│\033[48;5;235m%s\033[%dG%s\033[%dG\033[49;38;5;189m│", r, x, rep(" ", w - 2), x + 2, text, x + w - 1
+	}
+	BEGIN {
+		w = ENVIRON["W"] + 0; x = ENVIRON["X"] + 0; r = ENVIRON["Y"] + 0
+		n = ENVIRON["N"] + 0; mi = ENVIRON["MI"] + 0; t = ENVIRON["MT"]; hn = ENVIRON["MH"]
+		printf "\033[%d;%dH\033[38;5;189m╭─ \033[1;38;5;150m%s\033[22;38;5;189m %s╮", r, x, t, rep("─", w - length(t) - 5)
+	}
+	NR <= n { row(++r, "\033[38;5;252m" substr($0, 1, w - 4)) }
+	END {
+		if (mi) { row(++r, ""); row(++r, "\033[38;5;150m❯ \033[39m") }
+		printf "\033[%d;%dH\033[38;5;189m╰%s \033[38;5;245m%s\033[38;5;189m ─╯\033[0m", ++r, x, rep("─", w - length(hn) - 5), hn
+		if (mi) printf "\033[%d;%dH\033[48;5;235;39m", r - 1, x + 4
+	}'
+
+# modal TITLE HINT INPUT(0|1) [LINE...] - keep TITLE and HINT ASCII.
+modal() {
+	mt=$1 mh=$2 mi=$3
+	shift 3
+	MW=$((COLS - 4))
+	[ $MW -gt 64 ] && MW=64
+	MX=$(((COLS - MW) / 2 + 1)) MY=$(((ROWS - $# - mi * 2 - 2) / 2 + 1))
+	printf '%s\n' "$@" | N=$# MT=$mt MH=$mh MI=$mi W=$MW X=$MX Y=$MY awk "$MODAL_AWK"
+}
+
+# ask TITLE HINT INITIAL [LINE...] - edit one line in a centered box, starting
+# from INITIAL, into REPLY. Returns 1 (REPLY empty) on Esc.
+# ponytail: append/backspace only, no cursor movement; backspace drops a byte under dash.
+ask() {
+	at=$1 ah=$2 REPLY=$3
+	shift 3
+	modal "$at" "$ah" 1 "$@"
+	iy=$((MY + $# + 2)) ix=$((MX + 4)) iw=$((MW - 6))
+	printf '%s' "${ESC}[?25h"
+	while :; do
+		vis=$REPLY
+		while [ ${#vis} -gt $iw ]; do vis=${vis#?}; done
+		printf '%s[%d;%dH%s[48;5;235;39m%*s%s[%dG%s' "$ESC" "$iy" "$ix" "$ESC" "$iw" '' "$ESC" "$ix" "$vis"
+		k=$(key)
+		case $k in
+		'') break ;;
+		"$ESC") REPLY= && break ;;
+		"$BS" | "$DEL") REPLY=${REPLY%?} ;;
+		"$CU") REPLY= ;;
+		"$CW") REPLY=$(printf '%s' "$REPLY" | sed 's/[^ ]* *$//') ;;
+		?) case $k in [![:cntrl:]]) REPLY=$REPLY$k ;; esac ;;
+		esac
+	done
+	printf '%s' "${ESC}[0m${ESC}[?25l"
+	[ "$k" != "$ESC" ]
+}
+
+# Telescope-style floating picker. Candidates are "value<TAB>label<TAB>preview-file".
+PICK_AWK=$AWK_LIB'
+	function fz(s, q,   i, j, c, ls) {
+		s = tolower(s); q = tolower(q); j = 1; ls = length(s)
+		for (i = 1; i <= length(q); i++) {
+			c = substr(q, i, 1)
+			while (j <= ls && substr(s, j, 1) != c) j++
+			if (j > ls) return 0
+			j++
+		}
+		return 1
+	}
+	BEGIN { FS = "\t"; q = ENVIRON["Q"]; sel = ENVIRON["SEL"] + 0 }
+	fz($2, q) { m++; val[m] = $1; lab[m] = $2; pv[m] = $3 }
+	END {
+		if (sel > m) sel = m; if (sel < 1) sel = 1
+		if (ENVIRON["MODE"] == "get") { if (m) print val[sel]; exit }
+		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0
+		W = int(cols * 0.8); if (W > 110) W = 110; if (W < 40) W = cols
+		H = int(rows * 0.7); if (H < 8) H = rows; ih = H - 4
+		x0 = int((cols - W) / 2) + 1; y0 = int((rows - H) / 2) + 1
+		pvon = ENVIRON["PV"] == 1 && W >= 60
+		lw = pvon ? int((W - 3) / 2) : W - 2
+		mid = x0 + 1 + lw
+		top = sel > ih ? sel - ih : 0
+		if (pvon && m && pv[sel] != "")
+			while ((getline l < pv[sel]) > 0)
+				if (l ~ /^- \[[ xX]\] /) { np++; pd[np] = substr(l, 4, 1) != " "; pt[np] = substr(l, 7) }
+		print sel, y0, x0, W, ih, top
+		B = "\033[38;5;189m"; F = "\033[48;5;235m"; T = ENVIRON["T"]
+		printf "\033[%d;%dH%s╭─ \033[1;38;5;150m%s\033[22m%s %s╮", y0, x0, B, T, B, rep("─", W - length(T) - 5)
+		for (i = 1; i <= ih; i++) {
+			j = top + i
+			printf "\033[%d;%dH%s│%s%s", y0 + i, x0, B, F, rep(" ", W - 2)
+			if (j == sel && j <= m)
+				printf "\033[%dG\033[48;5;237m%s\033[%dG%s▌ \033[1;39m%s\033[22m%s", x0 + 1, rep(" ", lw), x0 + 1, B, substr(lab[j], 1, lw - 3), F
+			else if (j <= m)
+				printf "\033[%dG  \033[38;5;250m%s", x0 + 1, substr(lab[j], 1, lw - 3)
+			if (pvon) {
+				printf "\033[%dG%s│", mid, B
+				if (i <= np) printf " %s %s%s", pd[i] ? "\033[38;5;150m✓" : "\033[38;5;245m○", pd[i] ? "\033[38;5;242m" : "\033[38;5;250m", substr(pt[i], 1, W - lw - 7)
+			}
+			printf "\033[%dG\033[49m%s│", x0 + W - 1, B
+		}
+		cnt = m "/" NR
+		printf "\033[%d;%dH%s├%s┤", y0 + ih + 1, x0, B, rep("─", W - 2)
+		printf "\033[%d;%dH%s│%s%s\033[%dG\033[38;5;150m❯ \033[39m%s", y0 + ih + 2, x0, B, F, rep(" ", W - 2), x0 + 2, q
+		printf "\033[%dG\033[38;5;245m%s\033[%dG\033[49m%s│", x0 + W - 2 - length(cnt), cnt, x0 + W - 1, B
+		printf "\033[%d;%dH%s╰%s╯\033[0m", y0 + ih + 3, x0, B, rep("─", W - 2)
+		printf "\033[%d;%dH", y0 + ih + 2, x0 + 4 + length(q)
+	}'
+
+# pick TITLE CANDFILE PREVIEW(0|1) ALLOW_NEW(0|1) -> PICK; returns 1 on Esc.
+# Draws over the current screen, so call it right after draw.
+pick() {
+	pt=$1 pf=$2 ppv=$3 pnew=$4 q= sel=1
+	printf '%s' "${ESC}[?25h"
+	while :; do
+		out=$(MODE=draw Q=$q SEL=$sel ROWS=$ROWS COLS=$COLS PV=$ppv T=$pt awk "$PICK_AWK" "$pf")
+		set -- ${out%%"$NL"*}
+		sel=$1 py=$2 px=$3 pw=$4 ph=$5 ptop=$6
+		printf '%s' "${out#*"$NL"}"
+		k=$(key)
+		case $k in
+		"MOUSE "*)
+			mouse_xy "${k#MOUSE }"
+			k=IGNORE
+			case $MB in
+			64) k=UP ;;
+			65) k=DOWN ;;
+			0)
+				if [ "$MX" -lt "$px" ] || [ "$MX" -ge $((px + pw)) ] || [ "$MY" -lt "$py" ] || [ "$MY" -gt $((py + ph + 3)) ]; then
+					k=$ESC
+				elif [ "$MY" -gt "$py" ] && [ "$MY" -le $((py + ph)) ] && [ "$MX" -lt $((px + pw / 2)) -o "$ppv" != 1 ]; then
+					sel=$((ptop + MY - py)) k=
+				fi
+				;;
+			esac
+			;;
+		esac
+		case $k in
+		"$ESC") break ;;
+		'')
+			PICK=$(MODE=get Q=$q SEL=$sel awk "$PICK_AWK" "$pf")
+			[ -z "$PICK" ] && [ "$pnew" = 1 ] && PICK=$q
+			[ -n "$PICK" ] && { printf '%s' "${ESC}[?25l"; return 0; }
+			;;
+		UP | "$CP" | BTAB) sel=$((sel - 1)) ;;
+		DOWN | "$CN" | "$TAB") sel=$((sel + 1)) ;;
+		"$BS" | "$DEL") q=${q%?} sel=1 ;;
+		*) case $k in [[:print:]]) q=$q$k sel=1 ;; esac ;;
+		esac
+	done
+	printf '%s' "${ESC}[?25l"
+	return 1
+}
+
+task_text() { N=$cur awk '/^- \[[ xX]\] / && ++i == ENVIRON["N"] { print substr($0, 7) }' "$FILE"; }
+
+tab_add() {
+	mkdir -p "$HOME_DIR"
+	grep -qxF -- "$CURV" "$TABS" 2>/dev/null || printf '%s\n' "$CURV" >>"$TABS"
+}
+
+tab_count() { [ -f "$TABS" ] && wc -l <"$TABS" | tr -d ' ' || echo 0; }
+tab_index() { grep -nxF -- "$CURV" "$TABS" 2>/dev/null | head -n 1 | cut -d: -f1; }
+
+open_list() {
+	case $1 in
+	/*) [ -f "$1" ] || { msg="missing: $1"; return 1; }; use_local "$1" ;;
+	*) valid_name "$1" || { msg="bad list name: $1"; return 1; }; use_global "$1" ;;
+	esac
+	tab_add
+	cur=1 top=0
+}
+
+open_tab() {
+	v=$(sed -n "${1}p" "$TABS" 2>/dev/null)
+	if [ -n "$v" ]; then open_list "$v"; else msg="no tab $1"; fi
+}
+
+# cycle +1|-1 through tabs.
+cycle() {
+	tc=$(tab_count)
+	[ "$tc" -gt 1 ] || return 0
+	i=$(tab_index)
+	open_tab $((((${i:-1} - 1 + $1 + tc) % tc) + 1))
+}
+
+close_tab() {
+	tc=$(tab_count)
+	[ "$tc" -gt 1 ] || { msg='the last tab stays open'; return 0; }
+	i=$(tab_index)
+	grep -vxF -- "$CURV" "$TABS" >"$TABS.tmp"
+	mv "$TABS.tmp" "$TABS"
+	[ "${i:-1}" -ge "$tc" ] && i=$((tc - 1))
+	open_tab "${i:-1}"
+	msg='tab closed'
+}
+
+# Undo: snapshot the open list before each change; z restores the newest.
+snap() {
+	UNDO_N=$((UNDO_N + 1))
+	printf '%s\n' "$CURV" >"$TD/$UNDO_N.v"
+	[ -f "$FILE" ] && cp "$FILE" "$TD/$UNDO_N"
+	return 0
+}
+
+undo() {
+	[ "$UNDO_N" -gt 0 ] || { msg='nothing to undo'; return 0; }
+	v=$(cat "$TD/$UNDO_N.v")
+	[ "$v" = "$CURV" ] || open_list "$v" || return 0
+	if [ -f "$TD/$UNDO_N" ]; then
+		cp "$TD/$UNDO_N" "$FILE.tmp.$$" && mv "$FILE.tmp.$$" "$FILE"
+	else
+		: >"$FILE"
+	fi
+	rm -f "$TD/$UNDO_N" "$TD/$UNDO_N.v"
+	UNDO_N=$((UNDO_N - 1))
+	msg='undone'
+}
+
+# Hand the terminal to $EDITOR (may carry args, e.g. "code -w").
+editor() {
+	mkdir -p "$(dirname "$1")"
+	stty "$OLD_TTY"
+	printf '%s' "$MOUSE_OFF${ESC}[?25h${ESC}[?7h${ESC}[?1049l"
+	${EDITOR:-vi} "$1"
+	printf '%s' "${ESC}[?1049h${ESC}[?7l${ESC}[?25l$MOUSE_ON"
+	stty -icanon -echo min 1 time 0
+}
+
+help() {
+	modal 'Keys' 'any key closes' 0 \
+		'j k / arrows    move           g G     top / bottom' \
+		'n               new task       A       add many' \
+		'e               edit           x space tick' \
+		'd               delete         z       undo' \
+		'/               find task      s       open or create list' \
+		'1-9             jump to tab    tab     next tab (shift: prev)' \
+		'c               close tab      E       open in $EDITOR' \
+		'q               quit'
+	key >/dev/null
+}
+
+tui() {
+	set +e
+	OLD_TTY=$(stty -g)
+	TD=$(mktemp -d)
+	trap 'stty "$OLD_TTY"; printf "%s" "$MOUSE_OFF${ESC}[0m${ESC}[?25h${ESC}[?7h${ESC}[?1049l"; rm -rf "${TD:?}"' EXIT
+	trap 'exit 130' INT TERM HUP
+	# alt screen, no autowrap (long lines clip), hidden cursor, mouse reports
+	printf '%s' "${ESC}[?1049h${ESC}[?7l${ESC}[?25l$MOUSE_ON"
+	stty -icanon -echo min 1 time 0
+	cur=1 top=0 n=0 msg= UNDO_N=0
+	tab_add
+	while :; do
+		draw
+		k=$(key)
+		msg=
+		case $k in "MOUSE "*) mouse "${k#MOUSE }" ;; esac
+		case $k in
+		q) break ;;
+		j | DOWN | "$CN") cur=$((cur + 1)) ;;
+		k | UP | "$CP") cur=$((cur - 1)) ;;
+		g) cur=1 ;;
+		G) cur=$n ;;
+		n)
+			ask 'New task' 'enter adds, esc cancels' ''
+			[ -n "$REPLY" ] && snap && add "$REPLY" && cur=$((n + 1))
+			;;
+		A)
+			added=0
+			while :; do
+				ask "Add many ($added added)" 'enter adds, empty line or esc ends' ''
+				[ -n "$REPLY" ] || break
+				[ $added = 0 ] && snap
+				add "$REPLY"
+				added=$((added + 1)) cur=$((n + 1))
+				draw
+			done
+			[ $added -gt 0 ] && msg="added $added"
+			;;
+		e)
+			[ "$n" -gt 0 ] && {
+				old=$(task_text)
+				ask 'Edit task' 'enter saves, esc cancels' "$old"
+				[ -n "$REPLY" ] && [ "$REPLY" != "$old" ] && snap && rewrite "$cur" edit "$(oneline "$REPLY")"
+			}
+			;;
+		x | ' ') [ "$n" -gt 0 ] && snap && rewrite "$cur" toggle ;;
+		d) [ "$n" -gt 0 ] && snap && rewrite "$cur" delete && msg='deleted (z undoes)' ;;
+		z) undo ;;
+		/)
+			awk '/^- \[[ xX]\] / { n++; print n "\t" substr($0, 7) "\t" }' "$FILE" >"$TD/c" 2>/dev/null
+			pick 'Find task' "$TD/c" 0 0 && cur=$PICK
+			;;
+		s)
+			{
+				l=$(find_local) && printf '%s\t%s\t%s\n' "$l" "$(short "$l") (./$LOCAL_NAME)" "$l"
+				[ -f "$TABS" ] && while IFS= read -r v; do
+					case $v in
+					/*) printf '%s\t%s\t%s\n' "$v" "$(short "$v") (./$LOCAL_NAME)" "$v" ;;
+					?*) printf '%s\t%s\t%s\n' "$v" "$v" "$HOME_DIR/$v.md" ;;
+					esac
+				done <"$TABS"
+				for f in "$HOME_DIR"/*.md; do
+					[ -e "$f" ] && w=$(basename "$f" .md) && printf '%s\t%s\t%s\n' "$w" "$w" "$f"
+				done
+			} | awk -F '\t' '!seen[$1]++' >"$TD/c"
+			pick 'Open list (type a new name to create)' "$TD/c" 1 1 && open_list "$PICK"
+			;;
+		"$TAB") cycle 1 ;;
+		BTAB) cycle -1 ;;
+		[1-9]) open_tab "$k" ;;
+		c) close_tab ;;
+		E) snap && editor "$FILE" ;;
+		'?') help ;;
+		esac
+	done
+}
+
+# ---------------------------------------------------------------- main
+
+forced=
+while getopts w:h o; do
+	case $o in
+	w) valid_name "$OPTARG" || die "bad list name: '$OPTARG'"; forced=$OPTARG ;;
+	h) usage; exit 0 ;;
+	*) usage >&2; exit 2 ;;
+	esac
+done
+shift $((OPTIND - 1))
+
+if [ -n "$forced" ]; then
+	use_global "$forced"
+elif l=$(find_local); then
+	use_local "$l"
+else
+	use_global "$(dir_list)"
+fi
+
+if [ $# -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
+	tui
+	exit 0
+fi
+
+cmd=${1:-l}
+[ $# -gt 0 ] && shift
+case $cmd in
+l | ls) list ;;
+n | new) add "$@" && list ;;
+e | edit)
+	if [ $# -eq 0 ]; then
+		mkdir -p "$(dirname "$FILE")"
+		exec ${EDITOR:-vi} "$FILE"
+	fi
+	n=$1
+	shift
+	[ $# -gt 0 ] || die 'usage: e N TEXT'
+	rewrite "$n" edit "$(oneline "$*")" && list
+	;;
+x | tick) rewrite "${1:-}" toggle && list ;;
+d | rm) rewrite "${1:-}" delete && list ;;
+s | lists) lists ;;
+init)
+	[ -f "$LOCAL_NAME" ] && die "$LOCAL_NAME already exists here"
+	printf '# Todo\n\n' >"$LOCAL_NAME"
+	echo "created ./$LOCAL_NAME"
+	;;
+h | help) usage ;;
+*) die "unknown command: $cmd (try: todone h)" ;;
+esac
