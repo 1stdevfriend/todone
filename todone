@@ -466,11 +466,21 @@ close_tab() {
 	msg='tab closed'
 }
 
-# Undo: snapshot the open list before each change; z restores the newest.
+# Undo: snapshot the open list before each change (snap) and again right after
+# it (seal); z restores the newest snapshot only if the file still matches the
+# sealed copy, so edits made outside the TUI are never overwritten.
 snap() {
-	UNDO_N=$((UNDO_N + 1))
+	UNDO_N=$((UNDO_N + 1)) SEAL=1
 	printf '%s\n' "$CURV" >"$TD/$UNDO_N.v"
 	[ -f "$FILE" ] && cp "$FILE" "$TD/$UNDO_N"
+	return 0
+}
+
+seal() {
+	[ "$SEAL" = 1 ] || return 0
+	SEAL=0
+	rm -f "$TD/$UNDO_N.after"
+	[ -f "$FILE" ] && cp "$FILE" "$TD/$UNDO_N.after"
 	return 0
 }
 
@@ -478,12 +488,21 @@ undo() {
 	[ "$UNDO_N" -gt 0 ] || { msg='nothing to undo'; return 0; }
 	v=$(cat "$TD/$UNDO_N.v")
 	[ "$v" = "$CURV" ] || open_list "$v" || return 0
+	if [ -f "$TD/$UNDO_N.after" ]; then
+		cmp -s "$TD/$UNDO_N.after" "$FILE"
+	else
+		[ ! -s "$FILE" ]
+	fi || {
+		UNDO_N=0
+		msg='list changed outside todone - undo history cleared'
+		return 0
+	}
 	if [ -f "$TD/$UNDO_N" ]; then
 		cp "$TD/$UNDO_N" "$FILE.tmp.$$" && mv "$FILE.tmp.$$" "$FILE"
 	else
 		: >"$FILE"
 	fi
-	rm -f "$TD/$UNDO_N" "$TD/$UNDO_N.v"
+	rm -f "$TD/$UNDO_N" "$TD/$UNDO_N.v" "$TD/$UNDO_N.after"
 	UNDO_N=$((UNDO_N - 1))
 	msg='undone'
 }
@@ -520,7 +539,7 @@ tui() {
 	# alt screen, no autowrap (long lines clip), hidden cursor, mouse reports
 	printf '%s' "${ESC}[?1049h${ESC}[?7l${ESC}[?25l$MOUSE_ON"
 	stty -icanon -echo min 1 time 0
-	cur=1 top=0 n=0 msg= UNDO_N=0
+	cur=1 top=0 n=0 msg= UNDO_N=0 SEAL=0
 	tab_add
 	while :; do
 		draw
@@ -585,6 +604,7 @@ tui() {
 		E) snap && editor "$FILE" ;;
 		'?') help ;;
 		esac
+		seal
 	done
 }
 
@@ -633,8 +653,21 @@ d | rm) rewrite "${1:-}" delete && list ;;
 s | lists) lists ;;
 init)
 	[ -f "$LOCAL_NAME" ] && die "$LOCAL_NAME already exists here"
-	printf '# Todo\n\n' >"$LOCAL_NAME"
-	echo "created ./$LOCAL_NAME"
+	old=$(dir_list)
+	of="$HOME_DIR/$old.md"
+	if [ "$old" != inbox ] && [ -s "$of" ]; then
+		# Move this directory's existing list into the repo instead of hiding it.
+		{ printf '# Todo\n\n'; cat "$of"; } >"$LOCAL_NAME.tmp.$$" && mv "$LOCAL_NAME.tmp.$$" "$LOCAL_NAME"
+		rm "$of"
+		if [ -f "$TABS" ]; then
+			OLD=$old NEW="$PWD/$LOCAL_NAME" awk '{ print ($0 == ENVIRON["OLD"] ? ENVIRON["NEW"] : $0) }' "$TABS" >"$TABS.tmp"
+			mv "$TABS.tmp" "$TABS"
+		fi
+		echo "created ./$LOCAL_NAME with the tasks from ~/.todone/$old.md"
+	else
+		printf '# Todo\n\n' >"$LOCAL_NAME"
+		echo "created ./$LOCAL_NAME"
+	fi
 	;;
 h | help) usage ;;
 *) die "unknown command: $cmd (try: todone h)" ;;

@@ -28,6 +28,8 @@ t -w inbox n 'from anywhere' >/dev/null; has home/inbox.md 'from anywhere'
 t -w ../evil n x 2>/dev/null && fail 'path in list name should fail'
 t s | grep -q 'blog' || fail 'lists'
 
+(cd blog && t init >/dev/null && has TODO.md '- [ ] draft post')
+[ ! -e home/blog.md ] || fail 'init should move the list'
 cd proj && t init >/dev/null
 printf 'notes stay\n' >>TODO.md
 cd sub && t n 'local task' >/dev/null && cd ..
@@ -54,4 +56,13 @@ has tui/inbox.md '- [ ] two'
 ! grep -q three tui/inbox.md || fail 'tui delete'
 has tui/work.md '- [ ] ship'
 [ "$(cat tui/.tabs)" = inbox ] || fail "tabs: $(cat tui/.tabs)"
+
+# Undo must not clobber a change made outside the TUI.
+export TODONE_HOME="$tmp/undo"
+mkdir -p "$TODONE_HOME"
+printf -- '- [ ] keep\n' >"$TODONE_HOME/inbox.md"
+{ keys x; sleep 0.3; printf -- '- [ ] outside\n' >>"$TODONE_HOME/inbox.md"; keys z q; } | pty sh "$T" >/dev/null 2>&1 || true
+has undo/inbox.md '- [x] keep'
+has undo/inbox.md '- [ ] outside'
+
 echo ok

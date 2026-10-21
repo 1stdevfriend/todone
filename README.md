@@ -26,7 +26,7 @@ The tab bar uses a powerline arrow, which needs a Nerd Font or Powerline font. W
 ## Where tasks live
 
 - **Per directory, automatically:** in `~/repos/blog`, `t` opens the list `blog`, kept in `~/.todone/blog.md`. In `$HOME` it is `inbox`.
-- **In the repo:** `t init` creates `./TODO.md`; from then on that directory (and its subdirectories) use it, the way git finds `.git`. Commit it if you want.
+- **In the repo:** `t init` creates `./TODO.md` (moving in that directory's existing list, if any); from then on that directory and its subdirectories use it, the way git finds `.git`. Commit it if you want.
 - **Any list from anywhere:** `t -w inbox n "call mum"`.
 
 Set `TODONE_HOME` to move `~/.todone`.
@@ -43,7 +43,7 @@ Run `t` with no arguments. Every list you open becomes a tab in the bottom bar.
 | `e` | edit, prefilled with the current text |
 | `x` / space | tick / untick |
 | `d` | delete (no prompt; `z` brings it back) |
-| `z` | undo, as many steps as you like (per session) |
+| `z` | undo, as many steps as you like (per session; refuses if the file was changed outside todone) |
 | `/` | fuzzy-find a task |
 | `s` | fuzzy-open a list with live preview; type a new name to create one |
 | `1`–`9`, `Tab` / `Shift-Tab` | jump to a tab, cycle tabs |
