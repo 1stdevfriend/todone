@@ -6,6 +6,13 @@ Tasks are plain Markdown checkboxes (`- [ ] task`), so you can read and edit the
 ## Install
 
 ```sh
+brew install 1stdevfriend/tap/todone
+echo "alias t=todone" >> ~/.zshrc
+```
+
+Or without Homebrew:
+
+```sh
 mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/1stdevfriend/todone/main/todone -o ~/.local/bin/todone
 chmod +x ~/.local/bin/todone
