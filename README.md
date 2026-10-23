@@ -39,6 +39,8 @@ Set `TODONE_HOME` to move `~/.todone`.
 
 Run `t` with no arguments. Every list you open becomes a tab in the bottom bar.
 
+**Home** (`0`, or the first tab) shows every list with its progress; `Enter` opens one, `n` starts a new list (named after the current folder by default), `D` deletes the selected one. `t` opens on home when the current folder has no list yet, and deleting a list brings you back there.
+
 | key | action |
 |-----|--------|
 | `j` `k` / arrows, `g` `G` | move, top, bottom |
@@ -50,9 +52,9 @@ Run `t` with no arguments. Every list you open becomes a tab in the bottom bar.
 | `z` | undo, as many steps as you like (per session; refuses if the file was changed outside todone) |
 | `/` | fuzzy-find a task |
 | `s` | fuzzy-open a list with live preview; type a new name to create one |
-| `1`–`9`, `Tab` / `Shift-Tab` | jump to a tab, cycle tabs |
+| `0`, `1`–`9`, `Tab` / `Shift-Tab` | home, jump to a tab, cycle tabs |
 | `c` | close tab |
-| `D` | delete the list (moved to the Trash; `z` brings it back) |
+| `D` | delete the list (moved to the Trash; `z` brings it back) and go home |
 | `E` | open the list in `$EDITOR` |
 | `?` | help |
 | `q` | quit |

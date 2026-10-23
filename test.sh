@@ -47,11 +47,11 @@ cd "$tmp"
 keys() { for k in "$@"; do sleep 0.3; printf '%b' "$k"; done; sleep 0.3; }
 # new, add-many, tick, undo, re-tick, edit, esc, open "work", click tab 1,
 # find+delete, click marker to untick, close tab
-# The pty reports 0x0, so the TUI lays out at 80x24: tab 1 sits at columns 9-19
-# of row 24, and task 1's marker at column 4 of row 3.
+# The pty reports 0x0, so the TUI lays out at 80x24: columns 9-18 of row 24
+# are the home tab, tab 1 starts at 19, and task 1's marker is column 4 of row 3.
 click() { printf '\\033[<0;%s;%sM\\033[<0;%s;%sm' "$1" "$2" "$1" "$2"; }
-keys n 'one\n' N 'two\n' 'three\n' '\n' g x z x e ' more\n' n zzz '\033' s wo rk '\n' n 'ship\n' \
-	"$(click 10 24)" / ree '\n' d "$(click 4 3)" 2 c q |
+keys n '\n' 'one\n' N 'two\n' 'three\n' '\n' g x z x e ' more\n' n zzz '\033' s wo rk '\n' n 'ship\n' \
+	"$(click 22 24)" / ree '\n' d "$(click 4 3)" 2 c q |
 	pty sh "$T" >/dev/null 2>&1 || true
 has tui/inbox.md '- [ ] one more'
 ! grep -q zzz tui/inbox.md || fail 'esc should cancel'
@@ -73,6 +73,7 @@ printf 'inbox\nwork\n' >"$TODONE_HOME/.tabs"
 printf -- '- [ ] w\n' >"$TODONE_HOME/work.md"
 keys 2 D q | pty sh "$T" >/dev/null 2>&1 || true
 [ ! -e undo/work.md ] || fail 'tui D'
+has undo/inbox.md '- [ ] outside'
 [ "$(cat undo/.tabs)" = inbox ] || fail "D tabs: $(cat undo/.tabs)"
 printf 'inbox\nwork\n' >"$TODONE_HOME/.tabs"
 printf -- '- [ ] w\n' >"$TODONE_HOME/work.md"
@@ -80,4 +81,14 @@ keys 2 D z q | pty sh "$T" >/dev/null 2>&1 || true
 has undo/work.md '- [ ] w'
 grep -qx work undo/.tabs || fail 'z should reopen the tab'
 
+
+# A folder with no list opens home; n there starts this folder's list.
+export TODONE_HOME="$tmp/fresh-home"
+mkdir -p "$tmp/fresh" && cd "$tmp/fresh"
+keys n '\n' 'hello\n' q | pty sh "$T" >/dev/null 2>&1 || true
+has "$TODONE_HOME/fresh.md" '- [ ] hello'
+grep -qx fresh "$TODONE_HOME/.tabs" || fail 'new list should get a tab'
+# D on home deletes the selected list (the only one here).
+keys 0 D q | pty sh "$T" >/dev/null 2>&1 || true
+[ ! -e "$TODONE_HOME/fresh.md" ] || fail 'home D'
 echo ok
