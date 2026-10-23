@@ -24,7 +24,7 @@ Type "t l" Sleep 300ms Enter Sleep 2s
 Type "t" Enter Sleep 2s
 Type "j" Sleep 400ms Type "j" Sleep 400ms Type "x" Sleep 1.2s
 Type "n" Sleep 700ms Type "Fix footer links" Sleep 400ms Enter Sleep 1.2s
-Type "A" Sleep 700ms
+Type "N" Sleep 700ms
 Type "Compress hero image" Enter Sleep 400ms
 Type "Add RSS feed" Enter Sleep 400ms
 Type "Check mobile nav" Enter Sleep 400ms
