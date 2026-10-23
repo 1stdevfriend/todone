@@ -7,6 +7,11 @@ Tasks are plain Markdown checkboxes (`- [ ] task`), so you can read and edit the
 
 [Watch as MP4](demo/demo.mp4). Re-record with `vhs demo/demo.tape` ([vhs](https://github.com/charmbracelet/vhs)).
 
+- Lists per folder, a home inbox, or a `TODO.md` in the repo
+- A full-screen TUI with tabs, fuzzy pickers, undo and mouse support
+- A start screen with every list and its progress
+- One-shot commands for scripts and quick capture
+
 ## Install
 
 ```sh
@@ -29,7 +34,7 @@ The tab bar uses a powerline arrow, which needs a Nerd Font or Powerline font. W
 
 ## Where tasks live
 
-- **Per directory, automatically:** in `~/repos/blog`, `t` opens the list `blog`, kept in `~/.todone/blog.md`. In `$HOME` it is `inbox`.
+- **Per directory, automatically:** in `~/repos/blog`, tasks go to the list `blog`, kept in `~/.todone/blog.md`. In `$HOME` it is `inbox`.
 - **In the repo:** `t init` creates `./TODO.md` (moving in that directory's existing list, if any); from then on that directory and its subdirectories use it, the way git finds `.git`. Commit it if you want.
 - **Any list from anywhere:** `t -w inbox n "call mum"`.
 
@@ -39,7 +44,22 @@ Set `TODONE_HOME` to move `~/.todone`.
 
 Run `t` with no arguments. Every list you open becomes a tab in the bottom bar.
 
-**Home** (`0`, or the first tab) shows every list with its progress; `Enter` opens one, `n` starts a new list (named after the current folder by default), `D` deletes the selected one. `t` opens on home when the current folder has no list yet, and deleting a list brings you back there.
+### Home
+
+![todone home screen](demo/home.png)
+
+The start screen shows every list with its open tasks and progress. `t` opens here when the current folder has no list yet, and deleting a list brings you back here. Reach it any time with `0` or the first tab.
+
+| key | action |
+|-----|--------|
+| `j` `k` / arrows, `Enter` | pick a list, open it |
+| `n` | new list (named after the current folder by default), then its first task |
+| `D` | delete the selected list (moved to the Trash; `z` brings it back) |
+| `s`, `?`, `q` | open a list, help, quit |
+
+The menu items and lists are clickable too.
+
+### Lists
 
 | key | action |
 |-----|--------|
@@ -75,6 +95,8 @@ t e 1 "write the draft"  # edit (t e alone opens $EDITOR)
 t d 1                    # delete
 t s                      # show all lists
 t D                      # delete this list (moved to the Trash)
+t init                   # keep this folder's list in ./TODO.md
+t --version              # or t v
 ```
 
 ## Test
