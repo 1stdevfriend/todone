@@ -27,6 +27,7 @@ has home/blog.md '- [ ] draft post'
 t -w inbox n 'from anywhere' >/dev/null; has home/inbox.md 'from anywhere'
 t -w ../evil n x 2>/dev/null && fail 'path in list name should fail'
 t s | grep -q 'blog' || fail 'lists'
+[ "$(t --version)" = "$(t v)" ] && t --version | grep -q '^todone [0-9]' || fail version
 t -w gone n 'temp' >/dev/null && t -w gone D >/dev/null
 [ ! -e home/gone.md ] || fail 'D should remove the list'
 ls .Trash/todone-gone-*.md >/dev/null 2>&1 || fail 'D should move the list to the Trash'
