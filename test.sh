@@ -83,10 +83,11 @@ has undo/work.md '- [ ] w'
 grep -qx work undo/.tabs || fail 'z should reopen the tab'
 
 
-# A folder with no list opens home; n there starts this folder's list.
+# A folder with no list opens home; New list there starts this folder's list.
 export TODONE_HOME="$tmp/fresh-home"
 mkdir -p "$tmp/fresh" && cd "$tmp/fresh"
-keys n '\n' 'hello\n' q | pty sh "$T" >/dev/null 2>&1 || true
+# (click the home menu's first item, New list, on row 9)
+keys "$(click 40 9)" '\n' 'hello\n' q | pty sh "$T" >/dev/null 2>&1 || true
 has "$TODONE_HOME/fresh.md" '- [ ] hello'
 grep -qx fresh "$TODONE_HOME/.tabs" || fail 'new list should get a tab'
 # D on home deletes the selected list (the only one here).
