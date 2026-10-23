@@ -27,6 +27,9 @@ has home/blog.md '- [ ] draft post'
 t -w inbox n 'from anywhere' >/dev/null; has home/inbox.md 'from anywhere'
 t -w ../evil n x 2>/dev/null && fail 'path in list name should fail'
 t s | grep -q 'blog' || fail 'lists'
+t -w gone n 'temp' >/dev/null && t -w gone D >/dev/null
+[ ! -e home/gone.md ] || fail 'D should remove the list'
+ls .Trash/todone-gone-*.md >/dev/null 2>&1 || fail 'D should move the list to the Trash'
 
 (cd blog && t init >/dev/null && has TODO.md '- [ ] draft post')
 [ ! -e home/blog.md ] || fail 'init should move the list'
@@ -47,7 +50,7 @@ keys() { for k in "$@"; do sleep 0.3; printf '%b' "$k"; done; sleep 0.3; }
 # The pty reports 0x0, so the TUI lays out at 80x24: tab 1 sits at columns 9-19
 # of row 24, and task 1's marker at column 4 of row 3.
 click() { printf '\\033[<0;%s;%sM\\033[<0;%s;%sm' "$1" "$2" "$1" "$2"; }
-keys n 'one\n' A 'two\n' 'three\n' '\n' g x z x e ' more\n' n zzz '\033' s wo rk '\n' n 'ship\n' \
+keys n 'one\n' N 'two\n' 'three\n' '\n' g x z x e ' more\n' n zzz '\033' s wo rk '\n' n 'ship\n' \
 	"$(click 10 24)" / ree '\n' d "$(click 4 3)" 2 c q |
 	pty sh "$T" >/dev/null 2>&1 || true
 has tui/inbox.md '- [ ] one more'
@@ -64,5 +67,17 @@ printf -- '- [ ] keep\n' >"$TODONE_HOME/inbox.md"
 { keys x; sleep 0.3; printf -- '- [ ] outside\n' >>"$TODONE_HOME/inbox.md"; keys z q; } | pty sh "$T" >/dev/null 2>&1 || true
 has undo/inbox.md '- [x] keep'
 has undo/inbox.md '- [ ] outside'
+
+# D deletes the list and closes its tab; z brings both back.
+printf 'inbox\nwork\n' >"$TODONE_HOME/.tabs"
+printf -- '- [ ] w\n' >"$TODONE_HOME/work.md"
+keys 2 D q | pty sh "$T" >/dev/null 2>&1 || true
+[ ! -e undo/work.md ] || fail 'tui D'
+[ "$(cat undo/.tabs)" = inbox ] || fail "D tabs: $(cat undo/.tabs)"
+printf 'inbox\nwork\n' >"$TODONE_HOME/.tabs"
+printf -- '- [ ] w\n' >"$TODONE_HOME/work.md"
+keys 2 D z q | pty sh "$T" >/dev/null 2>&1 || true
+has undo/work.md '- [ ] w'
+grep -qx work undo/.tabs || fail 'z should reopen the tab'
 
 echo ok

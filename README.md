@@ -43,7 +43,7 @@ Run `t` with no arguments. Every list you open becomes a tab in the bottom bar.
 |-----|--------|
 | `j` `k` / arrows, `g` `G` | move, top, bottom |
 | `n` | new task |
-| `A` | add many: one task per line, empty line or Esc ends (pasting works) |
+| `N` | add many: one task per line, empty line or Esc ends (pasting works) |
 | `e` | edit, prefilled with the current text |
 | `x` / space | tick / untick |
 | `d` | delete (no prompt; `z` brings it back) |
@@ -52,6 +52,7 @@ Run `t` with no arguments. Every list you open becomes a tab in the bottom bar.
 | `s` | fuzzy-open a list with live preview; type a new name to create one |
 | `1`–`9`, `Tab` / `Shift-Tab` | jump to a tab, cycle tabs |
 | `c` | close tab |
+| `D` | delete the list (moved to the Trash; `z` brings it back) |
 | `E` | open the list in `$EDITOR` |
 | `?` | help |
 | `q` | quit |
@@ -71,6 +72,7 @@ t x 1                    # tick / untick
 t e 1 "write the draft"  # edit (t e alone opens $EDITOR)
 t d 1                    # delete
 t s                      # show all lists
+t D                      # delete this list (moved to the Trash)
 ```
 
 ## Test
