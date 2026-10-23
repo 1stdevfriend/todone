@@ -1,7 +1,12 @@
 #!/bin/sh
 # todone - per-directory and global todo lists, stored as Markdown checkboxes.
+# Copyright (C) 2026 Kartikey Kushwah <kushwah.kartikey@icloud.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -eu
+
+VERSION=0.1.2
+AUTHOR='Kartikey Kushwah'
+EMAIL='kushwah.kartikey@icloud.com'
 
 HOME_DIR=${TODONE_HOME:-"$HOME/.todone"}
 TABS="$HOME_DIR/.tabs"
@@ -23,6 +28,7 @@ usage: todone [-w LIST] [COMMAND] [ARGS]
   D              delete this list (moves it to the Trash)
   init           keep this directory's list in ./TODO.md instead
   h              this help
+  v, --version   show the version
 
 Which list: a TODO.md in this directory (or any parent) first, otherwise
 the list named after this directory, kept in ~/.todone ("inbox" in $HOME).
@@ -273,9 +279,13 @@ list_cands() {
 	done
 }
 
+# Centered header (name, version, author, copyright) with the lists below it;
+# list rows start at HOME_Y0, which mouse() needs too.
+HOME_Y0=7
 HOME_AWK=$AWK_LIB'
-	BEGIN { FS = "\t"; cur = ENVIRON["CUR"] + 0; top = ENVIRON["TOP"] + 0
-		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0; h = rows - 5 }
+	function center(r, s, len) { printf "\033[%d;%dH%s\033[0m", r, int((cols - len) / 2) + 1, s }
+	BEGIN { FS = "\t"; cur = ENVIRON["CUR"] + 0; top = ENVIRON["TOP"] + 0; y0 = ENVIRON["Y0"] + 0
+		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0; h = rows - y0 - 2 }
 	{
 		m++; lab[m] = $2; o = 0; tt = 0
 		while ((getline l < $3) > 0) if (l ~ /^- \[[ xX]\] /) { tt++; if (substr(l, 4, 1) == " ") o++ }
@@ -283,24 +293,30 @@ HOME_AWK=$AWK_LIB'
 		if (length($2) > lw) lw = length($2)
 	}
 	END {
-		if (lw > 28) lw = 28
+		if (lw < 12) lw = 12; if (lw > 28) lw = 28
+		if (h < 1) h = 1
 		if (cur > m) cur = m; if (cur < 1) cur = 1
 		if (cur <= top) top = cur - 1; if (cur > top + h) top = cur - h; if (top < 0) top = 0
 		hint_layout()
 		print cur, top, m + 0, spans
-		c = m " lists"
-		printf "\033[H\033[2J\033[1;38;5;150m  home\033[0m\033[%dG\033[38;5;245m%s\033[0m\n\n", cols - length(c) - 1, c
-		if (!m) {
-			e = "no lists yet - press n to start one"
-			printf "\033[%d;%dH\033[38;5;245m%s\033[0m", int(rows / 2), int((cols - length(e)) / 2) + 1, e
-		}
+		printf "\033[H\033[2J"
+		v = "v" ENVIRON["VER"]; a = ENVIRON["AUTHOR"]; em = ENVIRON["EMAIL"]
+		center(2, "\033[1;38;5;150mtodone \033[22;38;5;245m" v, 7 + length(v))
+		center(3, "\033[38;5;189m" a " \033[38;5;245m<" em ">", length(a) + length(em) + 3)
+		c = "(c) 2026 " a " - GPL-3.0"
+		center(4, "\033[38;5;243m© 2026 " a " · GPL-3.0", length(c) - 2)
+		if (!m) center(y0 + 1, "\033[38;5;245mno lists yet - press n to start one", 35)
+		# one centered block of rows: name, open count, progress bar, done/total
+		bw = lw + 38; bx = int((cols - bw) / 2) + 1; if (bx < 1) bx = 1
 		for (i = top + 1; i <= m && i <= top + h; i++) {
-			pre = i == cur ? "\033[48;5;237m\033[38;5;189m ▌ " : "   "
+			printf "\033[%d;%dH", y0 + i - top - 1, bx
+			if (i == cur) printf "\033[48;5;237m%s\033[%dG\033[38;5;189m▌ ", rep(" ", bw), bx
+			else printf "  "
 			w = 12; dn = tot[i] - op[i]; f = tot[i] ? int(dn * w / tot[i]) : 0
-			printf "%s\033[%sm%-" lw "s  \033[38;5;245m%3d open  \033[38;5;150m%s\033[38;5;238m%s  \033[38;5;245m%d/%d\033[K\033[0m\n", \
-				pre, (i == cur ? "1;39" : "22;39"), substr(lab[i], 1, lw), op[i], rep("━", f), rep("━", w - f), dn, tot[i]
+			printf "\033[%sm%-" lw "s  \033[38;5;245m%3d open  \033[38;5;150m%s\033[38;5;238m%s  \033[38;5;245m%d/%d\033[0m", \
+				(i == cur ? "1;39" : "22;39"), substr(lab[i], 1, lw), op[i], rep("━", f), rep("━", w - f), dn, tot[i]
 		}
-		if (ENVIRON["NOTE"] != "") printf "\033[%d;4H\033[38;5;222m%s\033[0m", rows - 2, ENVIRON["NOTE"]
+		if (ENVIRON["NOTE"] != "") center(rows - 2, "\033[38;5;222m" ENVIRON["NOTE"], length(ENVIRON["NOTE"]))
 		footer()
 	}'
 
@@ -311,7 +327,8 @@ draw_home() {
 	if ! find_local >/dev/null && [ ! -s "$HOME_DIR/$(dir_list).md" ]; then
 		note="no list for $(tilde "$PWD") yet - n to start one"
 	fi
-	out=$(CUR=$cur TOP=$top ROWS=$ROWS COLS=$COLS MSG=$msg NOTE=$note HINTS=$HOME_HINTS BAR=$(tabbar) awk "$HOME_AWK" "$TD/h")
+	out=$(CUR=$cur TOP=$top Y0=$HOME_Y0 ROWS=$ROWS COLS=$COLS MSG=$msg NOTE=$note HINTS=$HOME_HINTS \
+		VER=$VERSION AUTHOR=$AUTHOR EMAIL=$EMAIL BAR=$(tabbar) awk "$HOME_AWK" "$TD/h")
 	set -- ${out%%"$NL"*}
 	cur=$1 top=$2 n=$3 SPANS=${4:-}
 	printf '%s' "${out#*"$NL"}"
@@ -354,11 +371,14 @@ mouse() {
 		elif [ "$MY" -eq $((ROWS - 1)) ]; then
 			k=$(hint_at "$MX")
 			[ "$k" = tab ] && k=$TAB
+		elif [ "$CURV" = "$HOMEV" ]; then
+			i=$((top + MY - HOME_Y0 + 1))
+			if [ "$MY" -ge "$HOME_Y0" ] && [ "$MY" -le $((ROWS - 3)) ] && [ "$i" -le "$n" ]; then
+				if [ "$i" = "$cur" ]; then k=enter; else cur=$i; fi
+			fi
 		elif [ "$MY" -ge 3 ] && [ "$MY" -le $((ROWS - 2)) ] && [ $((top + MY - 2)) -le "$n" ]; then
 			i=$((top + MY - 2))
-			if [ "$CURV" = "$HOMEV" ]; then
-				if [ "$i" = "$cur" ]; then k=enter; else cur=$i; fi
-			elif [ "$MX" -le 5 ]; then cur=$i k=x
+			if [ "$MX" -le 5 ]; then cur=$i k=x
 			elif [ "$i" = "$cur" ]; then k=e
 			else cur=$i; fi
 		fi
@@ -760,6 +780,7 @@ tui() {
 # ---------------------------------------------------------------- main
 
 forced=
+[ "${1:-}" = --version ] && { echo "todone $VERSION"; exit 0; }
 while getopts w:h o; do
 	case $o in
 	w) valid_name "$OPTARG" || die "bad list name: '$OPTARG'"; forced=$OPTARG ;;
@@ -825,5 +846,6 @@ init)
 	fi
 	;;
 h | help) usage ;;
+v | -v | --version) echo "todone $VERSION" ;;
 *) die "unknown command: $cmd (try: todone h)" ;;
 esac

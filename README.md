@@ -83,6 +83,10 @@ t D                      # delete this list (moved to the Trash)
 sh test.sh
 ```
 
+## Author
+
+Kartikey Kushwah <kushwah.kartikey@icloud.com>
+
 ## License
 
-GPL-3.0. You can use, change and share todone; if you distribute a modified version, you must release its source under the GPL too. See [LICENSE](LICENSE).
+Copyright © 2026 Kartikey Kushwah. GPL-3.0. You can use, change and share todone; if you distribute a modified version, you must release its source under the GPL too. See [LICENSE](LICENSE).
