@@ -279,16 +279,14 @@ list_cands() {
 	done
 }
 
-# AstroNvim-style start screen, all centered: logo, version and credits, a menu
-# of actions (keys right-aligned), then the lists and a stats line. Rows are fixed
-# so mouse() can map clicks: menu from HOME_MENU_Y0, lists from HOME_Y0.
+# AstroNvim-style start screen: logo, version and credits, a menu of actions
+# (keys right-aligned), the lists and a stats line, as one block centered both
+# ways. The rows it lands on are reported back so mouse() can map clicks.
 HOME_MENU='n New list|s Open list|? Keys|q Quit'
-HOME_MENU_Y0=9
-HOME_Y0=15
 HOME_AWK=$AWK_LIB'
 	function center(r, s, len) { printf "\033[%d;%dH%s\033[0m", r, int((cols - len) / 2) + 1, s }
-	BEGIN { FS = "\t"; cur = ENVIRON["CUR"] + 0; top = ENVIRON["TOP"] + 0; y0 = ENVIRON["Y0"] + 0
-		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0; h = rows - y0 - 2 }
+	BEGIN { FS = "\t"; cur = ENVIRON["CUR"] + 0; top = ENVIRON["TOP"] + 0
+		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0 }
 	{
 		m++; lab[m] = $2; o = 0; tt = 0
 		while ((getline l < $3) > 0) if (l ~ /^- \[[ xX]\] /) { tt++; if (substr(l, 4, 1) == " ") o++ }
@@ -297,25 +295,30 @@ HOME_AWK=$AWK_LIB'
 	}
 	END {
 		if (lw < 12) lw = 12; if (lw > 28) lw = 28
-		if (h < 1) h = 1
+		nm = split(ENVIRON["MENU"], mi, "|")
+		# block height: logo 2, gap, credits 3, gap, menu, gap, "Lists", rows, gap, stats
+		avail = rows - 2; fixed = 11 + nm
+		h = avail - fixed; if (h < 1) h = 1
+		vis = m < h ? m : h; if (vis < 1) vis = 1
+		y = int((avail - fixed - vis) / 2) + 1; if (y < 1) y = 1
+		my0 = y + 7; y0 = my0 + nm + 2
 		if (cur > m) cur = m; if (cur < 1) cur = 1
 		if (cur <= top) top = cur - 1; if (cur > top + h) top = cur - h; if (top < 0) top = 0
 		hint_layout()
-		print cur, top, m + 0, spans
+		print cur, top, m + 0, my0, y0, vis, spans
 		printf "\033[H\033[2J"
 		# logo: "todo" in lavender turning "ne" green - todo, done
-		center(2, "\033[1;38;5;189m▀█▀ █▀█ █▀▄ █▀█ \033[38;5;150m█▄ █ █▀▀", 24)
-		center(3, "\033[1;38;5;189m █  █▄█ █▄▀ █▄█ \033[38;5;150m█ ▀█ ██▄", 24)
+		center(y, "\033[1;38;5;189m▀█▀ █▀█ █▀▄ █▀█ \033[38;5;150m█▄ █ █▀▀", 24)
+		center(y + 1, "\033[1;38;5;189m █  █▄█ █▄▀ █▄█ \033[38;5;150m█ ▀█ ██▄", 24)
 		v = "v" ENVIRON["VER"]; a = ENVIRON["AUTHOR"]; em = ENVIRON["EMAIL"]
-		center(5, "\033[38;5;245m" v, length(v))
-		center(6, "\033[38;5;189m" a " \033[38;5;245m<" em ">", length(a) + length(em) + 3)
+		center(y + 3, "\033[38;5;245m" v, length(v))
+		center(y + 4, "\033[38;5;189m" a " \033[38;5;245m<" em ">", length(a) + length(em) + 3)
 		c = "(c) 2026 " a " - GPL-3.0"
-		center(7, "\033[38;5;243m© 2026 " a " · GPL-3.0", length(c) - 2)
+		center(y + 5, "\033[38;5;243m© 2026 " a " · GPL-3.0", length(c) - 2)
 		bw = lw + 38; bx = int((cols - bw) / 2) + 1; if (bx < 1) bx = 1
-		nm = split(ENVIRON["MENU"], mi, "|")
 		for (i = 1; i <= nm; i++) {
 			sp = index(mi[i], " ")
-			printf "\033[%d;%dH\033[38;5;252m%s\033[%dG\033[1;38;5;189m%s\033[0m", ENVIRON["MY0"] + i - 1, bx + 2, substr(mi[i], sp + 1), bx + bw - 2, substr(mi[i], 1, sp - 1)
+			printf "\033[%d;%dH\033[38;5;252m%s\033[%dG\033[1;38;5;189m%s\033[0m", my0 + i - 1, bx + 2, substr(mi[i], sp + 1), bx + bw - 2, substr(mi[i], 1, sp - 1)
 		}
 		printf "\033[%d;%dH\033[38;5;243mLists\033[0m", y0 - 1, bx + 2
 		if (!m) printf "\033[%d;%dH\033[38;5;245mnone yet - press n to start one\033[0m", y0, bx + 2
@@ -330,7 +333,7 @@ HOME_AWK=$AWK_LIB'
 		}
 		note = ENVIRON["NOTE"]
 		if (note == "") { note = m " lists, " open + 0 " open tasks"; nc = "243" } else nc = "222"
-		center(rows - 2, "\033[38;5;" nc "m" note, length(note))
+		center(y0 + vis + 1, "\033[38;5;" nc "m" note, length(note))
 		footer()
 	}'
 
@@ -341,10 +344,10 @@ draw_home() {
 	if ! find_local >/dev/null && [ ! -s "$HOME_DIR/$(dir_list).md" ]; then
 		note="no list for $(tilde "$PWD") yet - n to start one"
 	fi
-	out=$(CUR=$cur TOP=$top Y0=$HOME_Y0 MY0=$HOME_MENU_Y0 MENU=$HOME_MENU ROWS=$ROWS COLS=$COLS MSG=$msg NOTE=$note HINTS=$HOME_HINTS \
+	out=$(CUR=$cur TOP=$top MENU=$HOME_MENU ROWS=$ROWS COLS=$COLS MSG=$msg NOTE=$note HINTS=$HOME_HINTS \
 		VER=$VERSION AUTHOR=$AUTHOR EMAIL=$EMAIL BAR=$(tabbar) awk "$HOME_AWK" "$TD/h")
 	set -- ${out%%"$NL"*}
-	cur=$1 top=$2 n=$3 SPANS=${4:-}
+	cur=$1 top=$2 n=$3 HOME_MENU_Y0=$4 HOME_Y0=$5 HOME_VIS=$6 SPANS=${7:-}
 	printf '%s' "${out#*"$NL"}"
 }
 
@@ -389,7 +392,7 @@ mouse() {
 			i=$((top + MY - HOME_Y0 + 1))
 			if [ "$MY" -ge "$HOME_MENU_Y0" ] && [ "$MY" -lt "$HOME_Y0" ]; then
 				k=$(printf '%s' "$HOME_MENU" | awk -v RS='|' -v i=$((MY - HOME_MENU_Y0 + 1)) 'NR == i { print $1 }')
-			elif [ "$MY" -ge "$HOME_Y0" ] && [ "$MY" -le $((ROWS - 3)) ] && [ "$i" -le "$n" ]; then
+			elif [ "$MY" -ge "$HOME_Y0" ] && [ "$MY" -lt $((HOME_Y0 + HOME_VIS)) ] && [ "$i" -le "$n" ]; then
 				if [ "$i" = "$cur" ]; then k=enter; else cur=$i; fi
 			fi
 		elif [ "$MY" -ge 3 ] && [ "$MY" -le $((ROWS - 2)) ] && [ $((top + MY - 2)) -le "$n" ]; then
