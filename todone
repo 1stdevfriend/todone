@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -eu
 
-VERSION=0.1.2
+VERSION=0.2.0
 AUTHOR='Kartikey Kushwah'
 EMAIL='kushwah.kartikey@icloud.com'
 
@@ -21,9 +21,12 @@ usage: todone [-w LIST] [COMMAND] [ARGS]
   (none)         open the TUI (plain list when not in a terminal)
   l              list tasks
   n TEXT         new task
+  a N TEXT       new subtask under task N
   e N TEXT       edit task N (no args: open the list in $EDITOR)
   x N            tick / untick task N
-  d N            delete task N
+  d N            delete task N (and its subtasks)
+  due N DATE     set the due date: today, tom, fri, +3, 11-02, 2026-11-02 ('' clears)
+  est N TIME     set the estimate: 2h, 30m, 1h30m ('' clears)
   s              show all lists
   D              delete this list (moves it to the Trash)
   init           keep this directory's list in ./TODO.md instead
@@ -71,12 +74,12 @@ list() {
 	[ -f "$FILE" ] || { echo '  (empty)'; return 0; }
 	color=0
 	[ -t 1 ] && [ -z "${NO_COLOR:-}" ] && color=1
-	C=$color awk '
+	C=$color awk "$AWK_LIB"'
 		/^#/ { print; next }
-		/^- \[[ xX]\] / {
+		iscb($0) {
 			n++
-			done = substr($0, 4, 1) != " "
-			line = sprintf("%3d [%s] %s", n, done ? "x" : " ", substr($0, 7))
+			done = cbdone($0)
+			line = sprintf("%3d %s[%s] %s", n, ($0 ~ /^[ \t]/ ? "  " : ""), (done ? "x" : " "), cbtext($0))
 			if (done && ENVIRON["C"] == 1) line = "\033[2;9m" line "\033[0m"
 			print line
 		}
@@ -92,23 +95,80 @@ add() {
 	printf -- '- [ ] %s\n' "$(oneline "$*")" >>"$FILE"
 }
 
-# rewrite N toggle|delete|edit [TEXT] - other lines are kept untouched.
+# rewrite N ACTION [ARG] - change task N; other lines are kept untouched.
+#   toggle | delete (takes its subtasks along) | edit TEXT (keeps the fields)
+#   sub TEXT (new subtask) | indent | outdent | due DATE | est MINUTES | spent MINUTES (adds focus time)
 rewrite() {
 	case $1 in '' | *[!0-9]*) die "not a task number: '$1'" ;; esac
 	[ -f "$FILE" ] || die "no task #$1"
 	tmp="$FILE.tmp.$$"
-	N=$1 ACT=$2 TEXT=${3:-} awk '
-		/^- \[[ xX]\] / && ++i == ENVIRON["N"] {
-			hit = 1
-			if (ENVIRON["ACT"] == "delete") next
-			if (ENVIRON["ACT"] == "toggle")
-				$0 = "- [" (substr($0, 4, 1) == " " ? "x" : " ") "]" substr($0, 6)
-			else
-				$0 = substr($0, 1, 6) ENVIRON["TEXT"]
+	N=$1 ACT=$2 TEXT=${3:-} awk "$AWK_LIB"'
+		BEGIN { act = ENVIRON["ACT"]; arg = ENVIRON["TEXT"] }
+		{ cb = iscb($0); sb = cb && /^[ \t]/ }
+		skip && sb { next }
+		{ skip = 0 }
+		ins != "" && !sb { print ins; ins = "" }
+		cb && ++i == ENVIRON["N"] + 0 {
+			hit = 1; p = index($0, "["); pre = substr($0, 1, p + 2); txt = cbtext($0)
+			if (act == "delete") { skip = !sb; next }
+			if (act == "toggle") $0 = substr($0, 1, p) (cbdone($0) ? " " : "x") substr($0, p + 2)
+			else if (act == "edit") {
+				t = meta(txt); d = DUE; e = EST; m = SPENT
+				t = meta(arg); if (DUE == "") DUE = d; if (!EST) EST = e; if (!SPENT) SPENT = m
+				$0 = pre " " t tok()
+			}
+			else if (act == "due") { t = meta(txt); DUE = arg; $0 = pre " " t tok() }
+			else if (act == "est") { t = meta(txt); EST = arg + 0; $0 = pre " " t tok() }
+			else if (act == "spent") { t = meta(txt); SPENT += arg; $0 = pre " " t tok() }
+			else if (act == "sub") {
+				ins = "  - [ ] " arg
+				if (sb) { print; print ins; ins = ""; next }
+			}
+			else if (act == "indent") { if (sb || i == 1) bad = "already a subtask or first task"; else $0 = "  " $0 }
+			else if (act == "outdent") { if (!sb) bad = "not a subtask"; else sub(/^[ \t]+/, "") }
 		}
 		{ print }
-		END { exit !hit }' "$FILE" >"$tmp" || { rm -f "$tmp"; die "no task #$1"; }
+		END {
+			if (ins != "") print ins
+			if (bad != "") { print bad > "/dev/stderr"; exit 2 }
+			exit !hit
+		}' "$FILE" >"$tmp" || { st=$?; rm -f "$tmp"; [ $st = 2 ] && die "can't $2 task #$1"; die "no task #$1"; }
 	mv "$tmp" "$FILE"
+}
+
+# date_in TEXT -> the date it means, or nothing.
+date_in() { S=$1 T=$(date +%F) awk "$AWK_LIB"' BEGIN { print parsedate(ENVIRON["S"], ENVIRON["T"]) }'; }
+# est_in TEXT -> minutes, or -1.
+est_in() { S=$1 awk "$AWK_LIB"' BEGIN { print estmin(ENVIRON["S"]) }'; }
+
+# task_get N title|due|est|mins|done|line [FILE] - a field of task N: est is
+# formatted, mins is "estimate spent" in minutes, line is the raw text.
+task_get() {
+	N=$1 F=$2 awk "$AWK_LIB"'
+		iscb($0) && ++i == ENVIRON["N"] + 0 {
+			l = cbtext($0); t = meta(l); f = ENVIRON["F"]
+			if (f == "title") print t
+			else if (f == "due") print DUE
+			else if (f == "est") print (EST ? fmtmin(EST) : "")
+			else if (f == "mins") print EST + 0, SPENT + 0
+			else if (f == "done") print cbdone($0)
+			else print l
+			exit
+		}' "${3:-$FILE}"
+}
+
+# set_due N TEXT / set_est N TEXT - empty TEXT clears the field.
+set_due() {
+	d=
+	[ -z "$2" ] || d=$(date_in "$2")
+	[ -z "$2" ] || [ -n "$d" ] || { msg="can't read the date '$2' (try fri, +3, 11-02)"; return 1; }
+	rewrite "$1" due "$d"
+}
+set_est() {
+	m=0
+	[ -z "$2" ] || m=$(est_in "$2")
+	[ "$m" -ge 0 ] || { msg="can't read the estimate '$2' (try 2h, 30m, 1h30m)"; return 1; }
+	rewrite "$1" est "$m"
 }
 
 untab() {
@@ -145,12 +205,15 @@ MOUSE_ON="${ESC}[?1000h${ESC}[?1006h" MOUSE_OFF="${ESC}[?1000l${ESC}[?1006l"
 # Powerline arrow; needs a Nerd/Powerline font. TODONE_SEP='' for plain blocks.
 SEP=${TODONE_SEP-$(printf '\356\202\260')}
 # Shown right-aligned in order; hints that do not fit are dropped.
-HINTS='? help|n new|N many|e edit|x tick|d del|z undo|/ find|s open|tab next|c close|q quit'
+HINTS='? help|n new|a sub|e edit|x tick|d del|t due|h est|p focus|C cal|z undo|N many|/ find|s open|tab next|c close|q quit'
 
 # One keypress; arrows come back as UP/DOWN/LEFT/RIGHT, shift-tab as BTAB,
-# Enter as '', a mouse press as "MOUSE button;col;row", anything else unknown as IGNORE.
+# Enter as '', a mouse press as "MOUSE button;col;row", anything else unknown as
+# IGNORE, and TICK when a timed read (stty time) gets nothing.
 key() {
-	k=$(dd bs=1 count=1 2>/dev/null)
+	k=$(dd bs=1 count=1 2>/dev/null; echo .)
+	k=${k%.}
+	case $k in '') k=TICK ;; "$NL") k= ;; esac
 	if [ "$k" = "$ESC" ]; then
 		stty min 0 time 1
 		s=$(dd bs=1 count=2 2>/dev/null)
@@ -184,14 +247,90 @@ short() { case $1 in /*) basename "$(dirname "$1")" ;; *) printf '%s' "$1" ;; es
 
 # Shared by every awk below.
 AWK_LIB='function rep(s, k,   r) { r = ""; while (k-- > 0) r = r s; return r }
-	# Right-aligned hint buttons: sets hx, hcol and spans ("key:from:to," for clicks).
+	# Tasks are "- [ ] text" lines; an indented one is a subtask of the task above it.
+	function iscb(s) { return s ~ /^[ \t]*- \[[ xX]\] / }
+	function cbdone(s) { return substr(s, index(s, "[") + 1, 1) != " " }
+	function cbtext(s) { return substr(s, index(s, "[") + 4) }
+	# Obsidian Tasks style fields: 📅 due date, ⏱ estimate, ⏳ time spent in focus.
+	# meta(s) moves them into DUE, EST and SPENT (minutes) and returns the title; tok() writes them back.
+	function meta(s,   e) {
+		DUE = ""; EST = 0; SPENT = 0
+		if (match(s, / ?📅 [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/)) {
+			DUE = substr(s, RSTART + RLENGTH - 10, 10); s = substr(s, 1, RSTART - 1) substr(s, RSTART + RLENGTH)
+		}
+		if (match(s, / ?(⏱️|⏱) [0-9][0-9hm]*/)) {
+			e = substr(s, RSTART, RLENGTH); sub(/.* /, "", e); EST = estmin(e); if (EST < 0) EST = 0
+			s = substr(s, 1, RSTART - 1) substr(s, RSTART + RLENGTH)
+		}
+		if (match(s, / ?⏳ [0-9][0-9hm]*/)) {
+			e = substr(s, RSTART, RLENGTH); sub(/.* /, "", e); SPENT = estmin(e); if (SPENT < 0) SPENT = 0
+			s = substr(s, 1, RSTART - 1) substr(s, RSTART + RLENGTH)
+		}
+		return s
+	}
+	function tok() { return (EST > 0 ? " ⏱ " fmtmin(EST) : "") (DUE != "" ? " 📅 " DUE : "") (SPENT > 0 ? " ⏳ " fmtmin(SPENT) : "") }
+	# "2" or "1.5h" (hours), "30m", "1h30m" -> minutes; -1 if unreadable.
+	function estmin(e,   a) {
+		e = tolower(e); gsub(/ /, "", e)
+		if (e ~ /^[0-9]+(\.[0-9]+)?h?$/) return int(e * 60 + 0.5)
+		if (e ~ /^[0-9]+m$/) return e + 0
+		if (e ~ /^[0-9]+h[0-9]+m?$/) { split(e, a, "h"); return a[1] * 60 + a[2] }
+		return -1
+	}
+	function fmtmin(m,   h) { h = int(m / 60); m %= 60; return h ? h "h" (m ? m "m" : "") : m "m" }
+	# Dates as YYYY-MM-DD; jdn/ymd convert to and from day numbers (0 = Sunday for wday).
+	function jdn(y, m, d,   a) {
+		a = int((14 - m) / 12); y += 4800 - a; m += 12 * a - 3
+		return d + int((153 * m + 2) / 5) + 365 * y + int(y / 4) - int(y / 100) + int(y / 400) - 32045
+	}
+	function ymd(j,   a, b, c, d, e, m) {
+		a = j + 32044; b = int((4 * a + 3) / 146097); c = a - int(146097 * b / 4)
+		d = int((4 * c + 3) / 1461); e = c - int(1461 * d / 4); m = int((5 * e + 2) / 153)
+		return sprintf("%04d-%02d-%02d", 100 * b + d - 4800 + int(m / 10), m + 3 - 12 * int(m / 10), e - int((153 * m + 2) / 5) + 1)
+	}
+	function dj(s) { return jdn(substr(s, 1, 4) + 0, substr(s, 6, 2) + 0, substr(s, 9, 2) + 0) }
+	function wday(j) { return (j + 1) % 7 }
+	function mname(m) { return substr("JanFebMarAprMayJunJulAugSepOctNovDec", m * 3 - 2, 3) }
+	function dname(j) { return substr("SunMonTueWedThuFriSat", wday(j) * 3 + 1, 3) }
+	function okdate(y, m, d) { return m >= 1 && m <= 12 && ymd(jdn(y, m, d)) == sprintf("%04d-%02d-%02d", y, m, d) }
+	# How a due date reads next to a task.
+	function rel(due, today,   k) {
+		k = dj(due) - dj(today)
+		if (k < 0) return -k "d late"
+		if (k == 0) return "today"
+		if (k == 1) return "tomorrow"
+		if (k < 7) return dname(dj(due))
+		if (substr(due, 1, 4) == substr(today, 1, 4)) return mname(substr(due, 6, 2) + 0) " " substr(due, 9, 2) + 0
+		return due
+	}
+	# today, tom(orrow), +3 / 3d / 2w, a weekday (next one, today included), MM-DD, YYYY-MM-DD -> date or "".
+	function parsedate(s, today,   tj, a, i, y, d) {
+		s = tolower(s); gsub(/^ +| +$/, "", s); tj = dj(today)
+		if (s == "today" || s == "tod") return today
+		if (s == "tomorrow" || s == "tom") return ymd(tj + 1)
+		if (s ~ /^\+[0-9]+$/ || s ~ /^\+?[0-9]+d$/) { gsub(/[+d]/, "", s); return ymd(tj + s) }
+		if (s ~ /^\+?[0-9]+w$/) { gsub(/[+w]/, "", s); return ymd(tj + 7 * s) }
+		split("sunday monday tuesday wednesday thursday friday saturday", a, " ")
+		for (i = 1; i <= 7; i++) if (length(s) >= 3 && index(a[i], s) == 1) return ymd(tj + (i - 1 - wday(tj) + 7) % 7)
+		if (s ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?$/) {
+			split(s, a, "-"); return okdate(a[1] + 0, a[2] + 0, a[3] + 0) ? sprintf("%04d-%02d-%02d", a[1], a[2], a[3]) : ""
+		}
+		if (s ~ /^[0-9][0-9]?-[0-9][0-9]?$/) {
+			split(s, a, "-"); y = substr(today, 1, 4) + 0
+			if (!okdate(y, a[1] + 0, a[2] + 0)) return ""
+			d = sprintf("%04d-%02d-%02d", y, a[1], a[2])
+			return d >= today ? d : (okdate(y + 1, a[1] + 0, a[2] + 0) ? sprintf("%04d-%02d-%02d", y + 1, a[1], a[2]) : "")
+		}
+		return ""
+	}
+	# Centered hint buttons: sets hx, hcol and spans ("key:from:to," for clicks).
 	function hint_layout(   nh, hs, i, used, nk, sp, pos) {
 		msg = ENVIRON["MSG"]; nh = split(ENVIRON["HINTS"], hs, "|"); used = 0; nk = 0
 		for (i = 1; i <= nh; i++) {
 			if (used + length(hs[i]) + 2 > cols - length(msg) - 3) break
 			used += length(hs[i]) + 2; nk = i
 		}
-		hx = cols - used; if (hx < length(msg) + 3) hx = length(msg) + 3
+		hx = int((cols - used) / 2) + 1; if (hx < length(msg) + 3) hx = length(msg) + 3
 		pos = hx; hcol = ""; spans = ""
 		for (i = 1; i <= nk; i++) {
 			sp = index(hs[i], " ")
@@ -220,33 +359,60 @@ tabbar() {
 		[ "$v" = "$CURV" ] && c=150
 		s="$s$(seg $c "$i $(short "$v")")"
 	done <"$TABS"
-	printf '%s' "$s${ESC}[K${ESC}[0m"
+	s="$s${ESC}[K"
+	printf '%s' "$s${ESC}[0m"
 }
 
+# The open list as one block, centered both ways (zen mode). Fields sit in
+# columns at its right edge: time (spent/estimate) and due. Meta: cur top n y0 x0
+# spans, where y0 is the first task row and x0 the block's left column.
 DRAW_AWK=$AWK_LIB'
-	BEGIN { cur = ENVIRON["CUR"] + 0; top = ENVIRON["TOP"] + 0
-		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0; h = rows - 4 }
-	/^- \[[ xX]\] / { n++; d[n] = substr($0, 4, 1) != " "; t[n] = substr($0, 7); nd += d[n] }
+	BEGIN { cur = ENVIRON["CUR"] + 0; top = ENVIRON["TOP"] + 0; today = ENVIRON["TODAY"]
+		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0; h = rows - 4
+		w = cols - 4; if (w > 76) w = 76; x0 = int((cols - w) / 2) + 1 }
+	iscb($0) {
+		n++; sb[n] = $0 ~ /^[ \t]/; d[n] = cbdone($0); t[n] = meta(cbtext($0))
+		due[n] = DUE; est[n] = EST; sp[n] = SPENT; nd += d[n]; if (!d[n] && EST > SPENT) left += EST - SPENT
+	}
 	END {
 		if (cur > n) cur = n; if (cur < 1) cur = 1
 		if (cur <= top) top = cur - 1; if (cur > top + h) top = cur - h; if (top < 0) top = 0
+		vis = n - top; if (vis > h) vis = h; if (vis < 1) vis = 1
+		y = int((rows - 2 - (vis + 2)) / 2) + 1; if (y < 1) y = 1
 		hint_layout()
-		print cur, top, n + 0, spans
-		printf "\033[H\033[2J\033[1;38;5;189m  %s\033[0m", ENVIRON["WS"]
+		print cur, top, n + 0, y + 2, x0, spans
+		printf "\033[H\033[2J\033[%d;%dH\033[1;38;5;189m %s\033[0m", y, x0, ENVIRON["WS"]
 		if (n) {
-			p = nd "/" n " done  "; w = 12; f = int(nd * w / n)
-			printf "\033[%dG\033[38;5;245m%s\033[38;5;150m%s\033[38;5;238m%s\033[0m", cols - length(p) - w, p, rep("━", f), rep("━", w - f)
-		}
-		printf "\n\n"
-		if (!n) {
+			p = (left ? fmtmin(left) " left   " : "") nd "/" n " done "; bw = 12; f = int(nd * bw / n)
+			printf "\033[%dG\033[38;5;245m%s\033[38;5;150m%s\033[38;5;238m%s\033[0m", x0 + w - length(p) - bw, p, rep("━", f), rep("━", bw - f)
+		} else {
 			e = "nothing here - press n to add a task"
-			printf "\033[%d;%dH\033[38;5;245m%s\033[0m", int(rows / 2), int((cols - length(e)) / 2) + 1, e
+			printf "\033[%d;%dH\033[38;5;245m%s\033[0m", y + 2, int((cols - length(e)) / 2) + 1, e
 		}
+		mc = x0 + w - 24
 		for (i = top + 1; i <= n && i <= top + h; i++) {
-			pre = i == cur ? "\033[48;5;237m\033[38;5;189m ▌ " : "   "
+			r = y + 2 + i - top - 1
+			bg = i == cur ? "\033[48;5;237m" : ""
+			# paint the row first so the highlight spans just the block, whatever the text width
+			if (i == cur) printf "\033[%d;%dH%s%s", r, x0, bg, rep(" ", w)
+			pre = i == cur ? "\033[38;5;189m▌ " : "  "
 			mk = d[i] ? "\033[38;5;150m✓" : "\033[38;5;245m○"
 			tx = d[i] ? "\033[38;5;242;9m" : (i == cur ? "\033[1;39m" : "\033[39m")
-			printf "%s%s %s%s\033[K\033[0m\n", pre, mk, tx, t[i]
+			printf "\033[%d;%dH%s%s%s %s%s", r, x0, pre, (sb[i] ? "  " : ""), mk, tx, t[i]
+			if (sp[i] || est[i] || due[i] != "") {
+				# blank the field columns over any long title, in the row colour
+				printf "\033[0m%s\033[%dG%s", bg, mc, rep(" ", 24)
+				# time: spent (green, red once over the estimate) / estimate
+				ts = (sp[i] ? fmtmin(sp[i]) : "") (sp[i] && est[i] ? "/" : "") (est[i] ? fmtmin(est[i]) : "")
+				printf "\033[%dG", mc + 12 - length(ts)
+				if (sp[i]) printf "\033[38;5;%dm%s", (est[i] && sp[i] > est[i] ? 203 : 150), fmtmin(sp[i])
+				if (est[i]) printf "\033[38;5;245m%s%s", (sp[i] ? "/" : ""), fmtmin(est[i])
+				if (due[i] != "") {
+					c = d[i] ? 242 : (due[i] < today ? 203 : (due[i] == today ? 222 : 189))
+					printf "\033[%dG\033[38;5;%dm%10s", mc + 13, c, rel(due[i], today)
+				}
+			}
+			printf "\033[0m"
 		}
 		footer()
 	}'
@@ -255,14 +421,14 @@ draw() {
 	size
 	f=$FILE
 	[ -f "$f" ] || f=/dev/null
-	out=$(CUR=$cur TOP=$top ROWS=$ROWS COLS=$COLS WS=$WS MSG=$msg HINTS=$HINTS BAR=$(tabbar) awk "$DRAW_AWK" "$f")
+	out=$(CUR=$cur TOP=$top ROWS=$ROWS COLS=$COLS WS=$WS MSG=$msg HINTS=$HINTS TODAY=$(date +%F) BAR=$(tabbar) awk "$DRAW_AWK" "$f")
 	set -- ${out%%"$NL"*}
-	cur=$1 top=$2 n=$3 SPANS=${4:-}
+	cur=$1 top=$2 n=$3 LIST_Y0=$4 LIST_X0=$5 SPANS=${6:-}
 	printf '%s' "${out#*"$NL"}"
 }
 
 HOMEV=.home # CURV of the home page; list names cannot start with a dot
-HOME_HINTS='? help|enter open|n new list|D delete|s find|q quit'
+HOME_HINTS='? help|enter open|n new list|C cal|D delete|s find|q quit'
 
 # Every known list as "value<TAB>label<TAB>file": this directory's TODO.md,
 # then tabs, then ~/.todone.
@@ -282,14 +448,14 @@ list_cands() {
 # AstroNvim-style start screen: logo, version and credits, a menu of actions
 # (keys right-aligned), the lists and a stats line, as one block centered both
 # ways. The rows it lands on are reported back so mouse() can map clicks.
-HOME_MENU='n New list|s Open list|? Keys|q Quit'
+HOME_MENU='n New list|s Open list|C Calendar|? Keys|q Quit'
 HOME_AWK=$AWK_LIB'
 	function center(r, s, len) { printf "\033[%d;%dH%s\033[0m", r, int((cols - len) / 2) + 1, s }
 	BEGIN { FS = "\t"; cur = ENVIRON["CUR"] + 0; top = ENVIRON["TOP"] + 0
 		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0 }
 	{
 		m++; lab[m] = $2; o = 0; tt = 0
-		while ((getline l < $3) > 0) if (l ~ /^- \[[ xX]\] /) { tt++; if (substr(l, 4, 1) == " ") o++ }
+		while ((getline l < $3) > 0) if (iscb(l)) { tt++; if (!cbdone(l)) o++ }
 		close($3); op[m] = o; tot[m] = tt; open += o
 		if (length($2) > lw) lw = length($2)
 	}
@@ -351,6 +517,122 @@ draw_home() {
 	printf '%s' "${out#*"$NL"}"
 }
 
+# Month grid of every list's due tasks, and the selected day's agenda under it
+# (plus anything overdue when that day is today). MODE=pick prints the agenda
+# as picker candidates "N|list<TAB>label<TAB>" instead.
+CALV=.cal
+CAL_HINTS='? help|enter open|h l day|j k week|[ ] month|t today|C back|q quit'
+CAL_AWK=$AWK_LIB'
+	BEGIN { FS = "\t"; sel = ENVIRON["D"]; today = ENVIRON["TODAY"]
+		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0
+		y = substr(sel, 1, 4) + 0; mo = substr(sel, 6, 2) + 0; ym = substr(sel, 1, 7)
+		first = jdn(y, mo, 1); dim = (mo == 12 ? jdn(y + 1, 1, 1) : jdn(y, mo + 1, 1)) - first
+		off = (wday(first) + 6) % 7 }
+	{
+		i = 0
+		while ((getline l < $3) > 0) {
+			if (!iscb(l)) continue
+			i++; dn = cbdone(l); tt = meta(cbtext(l))
+			if (DUE == "") continue
+			if (!dn && substr(DUE, 1, 7) == ym) { cnt[substr(DUE, 9, 2) + 0]++; if (DUE < today) late[substr(DUE, 9, 2) + 0] = 1 }
+			if (DUE == sel || (sel == today && DUE < today && !dn)) {
+				na++; av[na] = i "|" $1; al[na] = $2; at[na] = tt; ad[na] = dn; ae[na] = EST; ao[na] = DUE < sel
+				if (!dn) mins += EST
+			}
+		}
+		close($3)
+	}
+	END {
+		if (ENVIRON["MODE"] == "pick") {
+			for (i = 1; i <= na; i++) print av[i] "\t" (ao[i] ? "late  " : "") al[i] ": " at[i] "\t"
+			exit
+		}
+		nw = int((off + dim + 6) / 7)
+		aw = cols - 4; if (aw > 64) aw = 64; ax = int((cols - aw) / 2) + 1
+		gx = int((cols - 35) / 2) + 1
+		# block: title, gap, weekdays, weeks, gap, agenda title, agenda rows
+		avail = rows - 2; h = avail - nw - 5; if (h < 1) h = 1
+		vis = na < h ? na : h; if (vis < 1) vis = 1
+		yy = int((avail - nw - 5 - vis) / 2) + 1; if (yy < 1) yy = 1
+		gy = yy + 3
+		hint_layout()
+		print gx, gy, off, dim, nw, spans
+		printf "\033[H\033[2J"
+		tl = mname(mo) " " y
+		printf "\033[%d;%dH\033[1;38;5;189m%s\033[0m", yy, int((cols - length(tl)) / 2) + 1, tl
+		printf "\033[%d;%dH\033[38;5;243m", yy + 2, gx
+		for (i = 0; i < 7; i++) printf " %s  ", substr("MoTuWeThFrSaSu", i * 2 + 1, 2)
+		for (dd = 1; dd <= dim; dd++) {
+			k = off + dd - 1; ds = sprintf("%s-%02d", ym, dd)
+			printf "\033[%d;%dH", gy + int(k / 7), gx + (k % 7) * 5
+			bg = ds == sel ? "\033[48;5;237m" : ""
+			fg = ds == today ? "\033[1;38;5;150m" : (ds < today ? "\033[38;5;243m" : "\033[38;5;252m")
+			mk = cnt[dd] ? (late[dd] ? "\033[38;5;203m•" : "\033[38;5;189m•") : " "
+			printf "%s%s %2d%s \033[0m", bg, fg, dd, mk
+		}
+		ay = gy + nw + 1
+		hd = dname(dj(sel)) " " substr(sel, 9, 2) + 0 " " mname(mo)
+		if (sel == today) hd = "Today, " hd
+		if (na) hd = hd "   " na " task" (na > 1 ? "s" : "") (mins ? ", " fmtmin(mins) : "")
+		printf "\033[%d;%dH\033[38;5;245m%s\033[0m", ay, ax, hd
+		if (!na) printf "\033[%d;%dH\033[38;5;243mnothing due\033[0m", ay + 1, ax
+		lw = 12
+		for (i = 1; i <= vis && i <= na; i++) {
+			printf "\033[%d;%dH\033[38;5;%dm%-" lw "s ", ay + i, ax, (ao[i] ? 203 : 243), substr(ao[i] ? "late" : al[i], 1, lw)
+			printf "%s%s %s\033[0m", (ad[i] ? "\033[38;5;150m✓" : "\033[38;5;245m○"), (ad[i] ? "\033[38;5;242;9m" : "\033[39m"), at[i]
+			if (ae[i]) printf "\033[%dG\033[K\033[38;5;245m%6s\033[0m", ax + aw - 6, fmtmin(ae[i])
+		}
+		footer()
+	}'
+
+draw_cal() {
+	size
+	list_cands >"$TD/h"
+	out=$(D=$CAL_D TODAY=$(date +%F) ROWS=$ROWS COLS=$COLS MSG=$msg HINTS=$CAL_HINTS BAR=$(tabbar) awk "$CAL_AWK" "$TD/h")
+	set -- ${out%%"$NL"*}
+	CAL_GX=$1 CAL_GY=$2 CAL_OFF=$3 CAL_DIM=$4 CAL_NW=$5 SPANS=${6:-}
+	printf '%s' "${out#*"$NL"}"
+}
+
+# cal_move days N | months N - move the selected day.
+cal_move() {
+	CAL_D=$(D=$CAL_D OP=$1 K=$2 awk "$AWK_LIB"'
+		BEGIN {
+			d = ENVIRON["D"]; k = ENVIRON["K"] + 0
+			if (ENVIRON["OP"] == "days") { print ymd(dj(d) + k); exit }
+			y = substr(d, 1, 4) + 0; m = substr(d, 6, 2) + 0 + k; dd = substr(d, 9, 2) + 0
+			while (m > 12) { m -= 12; y++ } while (m < 1) { m += 12; y-- }
+			while (!okdate(y, m, dd)) dd--
+			printf "%04d-%02d-%02d\n", y, m, dd
+		}')
+}
+
+# Open the calendar from a list or home; C or Esc goes back.
+open_cal() {
+	CAL_BACK=$CURV CAL_CUR=$cur CAL_TOP=$top
+	CAL_D=$(date +%F)
+	if [ "$CURV" != "$HOMEV" ] && [ "$n" -gt 0 ]; then
+		dd=$(task_get "$cur" due)
+		[ -n "$dd" ] && CAL_D=$dd
+	fi
+	CURV=$CALV WS=calendar FILE=
+}
+
+close_cal() {
+	case $CAL_BACK in
+	"$HOMEV") go_home ;;
+	*) open_list "$CAL_BACK" && cur=$CAL_CUR top=$CAL_TOP || go_home ;;
+	esac
+}
+
+# Enter on a day: pick one of its tasks and jump to it.
+cal_pick() {
+	D=$CAL_D TODAY=$(date +%F) MODE=pick awk "$CAL_AWK" "$TD/h" >"$TD/c"
+	[ -s "$TD/c" ] || { msg='nothing due that day'; return 0; }
+	pick 'Due tasks' "$TD/c" 0 0 || return 0
+	open_list "${PICK#*|}" && cur=${PICK%%|*}
+}
+
 home_val() { sed -n "${cur}p" "$TD/h" | cut -f 1; }
 go_home() { CURV=$HOMEV WS=home FILE= cur=1 top=0; }
 
@@ -388,6 +670,17 @@ mouse() {
 		elif [ "$MY" -eq $((ROWS - 1)) ]; then
 			k=$(hint_at "$MX")
 			[ "$k" = tab ] && k=$TAB
+		elif [ "$CURV" = "$FOCUSV" ]; then
+			:
+		elif [ "$CURV" = "$CALV" ]; then
+			r=$((MY - CAL_GY)) c=$((MX - CAL_GX))
+			if [ $r -ge 0 ] && [ $r -lt "$CAL_NW" ] && [ $c -ge 0 ] && [ $c -lt 35 ]; then
+				dd=$((r * 7 + c / 5 - CAL_OFF + 1))
+				if [ $dd -ge 1 ] && [ $dd -le "$CAL_DIM" ]; then
+					dd=$(printf '%s-%02d' "${CAL_D%-*}" $dd)
+					if [ "$dd" = "$CAL_D" ]; then k=enter; else CAL_D=$dd; fi
+				fi
+			fi
 		elif [ "$CURV" = "$HOMEV" ]; then
 			i=$((top + MY - HOME_Y0 + 1))
 			if [ "$MY" -ge "$HOME_MENU_Y0" ] && [ "$MY" -lt "$HOME_Y0" ]; then
@@ -395,9 +688,10 @@ mouse() {
 			elif [ "$MY" -ge "$HOME_Y0" ] && [ "$MY" -lt $((HOME_Y0 + HOME_VIS)) ] && [ "$i" -le "$n" ]; then
 				if [ "$i" = "$cur" ]; then k=enter; else cur=$i; fi
 			fi
-		elif [ "$MY" -ge 3 ] && [ "$MY" -le $((ROWS - 2)) ] && [ $((top + MY - 2)) -le "$n" ]; then
-			i=$((top + MY - 2))
-			if [ "$MX" -le 5 ]; then cur=$i k=x
+		elif [ "$MY" -ge "$LIST_Y0" ] && [ "$MY" -le $((ROWS - 2)) ] && [ $((top + MY - LIST_Y0 + 1)) -le "$n" ]; then
+			i=$((top + MY - LIST_Y0 + 1))
+			# the tick marker sits two columns further in on a subtask
+			if [ "$MX" -ge "$LIST_X0" ] && [ "$MX" -le $((LIST_X0 + 5)) ]; then cur=$i k=x
 			elif [ "$i" = "$cur" ]; then k=e
 			else cur=$i; fi
 		fi
@@ -491,7 +785,7 @@ PICK_AWK=$AWK_LIB'
 		top = sel > ih ? sel - ih : 0
 		if (pvon && m && pv[sel] != "")
 			while ((getline l < pv[sel]) > 0)
-				if (l ~ /^- \[[ xX]\] /) { np++; pd[np] = substr(l, 4, 1) != " "; pt[np] = substr(l, 7) }
+				if (iscb(l)) { np++; pd[np] = cbdone(l); pt[np] = (l ~ /^[ \t]/ ? "  " : "") meta(cbtext(l)) }
 		print sel, y0, x0, W, ih, top
 		B = "\033[38;5;189m"; F = "\033[48;5;235m"; T = ENVIRON["T"]
 		printf "\033[%d;%dH%s╭─ \033[1;38;5;150m%s\033[22m%s %s╮", y0, x0, B, T, B, rep("─", W - length(T) - 5)
@@ -561,7 +855,6 @@ pick() {
 	return 1
 }
 
-task_text() { N=$cur awk '/^- \[[ xX]\] / && ++i == ENVIRON["N"] { print substr($0, 7) }' "$FILE"; }
 
 tab_add() {
 	mkdir -p "$HOME_DIR"
@@ -707,15 +1000,142 @@ help() {
 	modal 'Keys' 'any key closes' 0 \
 		'j k / arrows    move           g G     top / bottom' \
 		'n               new task       N       add many' \
+		'a               add subtask    > <     indent / outdent' \
 		'e               edit           x space tick' \
 		'd               delete         z       undo' \
+		't               due date       h       estimate' \
+		'p               focus timer    C       calendar' \
 		'/               find task      s       open or create list' \
 		'0               home           enter   open list (on home)' \
 		'1-9             jump to tab    tab     next tab (shift: prev)' \
 		'c               close tab      D       delete list' \
-		'E               open in $EDITOR' \
-		'q               quit'
+		'E               open in $EDITOR   q    quit' \
+		'' \
+		'calendar: h l day, j k week, [ ] month, t today, C back' \
+		'focus: space focus / break, x done, esc back'
 	key >/dev/null
+}
+
+# Focus view: one task and a big timer. Focus runs for what is left of the
+# task's estimate (TODONE_POMO's focus length when there is none left), then a
+# break; space switches between the two at any time. Each stretch of focus is
+# added to the task as ⏳ time spent.
+FOCUSV=.focus
+FOCUS_AWK=$AWK_LIB'
+	# 3x5 pixel glyphs, two pixel rows per text row in half blocks, two columns per pixel
+	function big(s, r,   i, c, g, gw, x, a, b, o) {
+		o = ""
+		for (i = 1; i <= length(s); i++) {
+			c = substr(s, i, 1); g = F[c]; gw = c == ":" ? 1 : 3
+			for (x = 1; x <= gw; x++) {
+				a = substr(g, 2 * r * gw + x, 1) == "1"; b = r < 2 && substr(g, (2 * r + 1) * gw + x, 1) == "1"
+				o = o (a && b ? "██" : a ? "▀▀" : b ? "▄▄" : "  ")
+			}
+			if (i < length(s)) o = o "  "
+		}
+		return o
+	}
+	function bigw(s,   i, w) { w = 0; for (i = 1; i <= length(s); i++) w += substr(s, i, 1) == ":" ? 2 : 6; return w + 2 * (length(s) - 1) }
+	function center(r, s, len) { printf "\033[%d;%dH%s\033[0m", r, int((cols - len) / 2) + 1, s }
+	BEGIN {
+		split("111101101101111 010110010010111 111001111100111 111001111001111 101101111001001 111100111001111 111100111101111 111001001001001 111101111101111 111101111001111", g, " ")
+		for (i = 0; i < 10; i++) F[i ""] = g[i + 1]
+		F[":"] = "01010"
+		rows = ENVIRON["ROWS"] + 0; cols = ENVIRON["COLS"] + 0
+		left = ENVIRON["LEFT"] + 0; total = ENVIRON["TOTAL"] + 0; mode = ENVIRON["MODE"]
+		spent = ENVIRON["SPENT"] + 0; est = ENVIRON["EST"] + 0; t = ENVIRON["TITLE"]
+		hint_layout()
+		print spans
+		printf "\033[H\033[2J"
+		clock = sprintf("%02d:%02d", int(left / 60), left % 60)
+		col = mode == "focus" ? "203" : "150"
+		y = int((rows - 2 - 13) / 2) + 1; if (y < 1) y = 1
+		center(y, "\033[38;5;243m" ENVIRON["LIST"], length(ENVIRON["LIST"]))
+		center(y + 2, "\033[1;38;5;189m" t, length(t))
+		center(y + 4, "\033[1;38;5;" col "m" mode, length(mode))
+		for (r = 0; r < 3; r++) center(y + 6 + r, "\033[38;5;" col "m" big(clock, r), bigw(clock))
+		bw = bigw(clock); f = total ? int((total - left) * bw / total) : 0
+		center(y + 10, "\033[38;5;" col "m" rep("━", f) "\033[38;5;238m" rep("━", bw - f), bw)
+		st = "spent " fmtmin(spent) (est ? " of " fmtmin(est) : "")
+		center(y + 12, "\033[38;5;245m" st, length(st))
+		footer()
+	}'
+
+# Number of the task in focus, found again by its text.
+focus_n() { L=$FOCUS_LINE awk "$AWK_LIB"'iscb($0) { i++; if (cbtext($0) == ENVIRON["L"]) { print i; exit } }' "$FOCUS_FILE" 2>/dev/null; }
+
+focus_open() {
+	FOCUS_BACK=$CURV FOCUS_CUR=$cur FOCUS_TOP=$top FOCUS_FILE=$FILE
+	FOCUS_LINE=$(task_get "$cur" line)
+	CURV=$FOCUSV WS=focus FILE=
+	focus_start focus
+}
+
+# focus_start focus|break - start that timer from the top.
+focus_start() {
+	POMO_KIND=$1 POMO_START=$(date +%s) POMO_LEN=$POMO_BREAK
+	if [ "$1" = focus ]; then
+		set -- $(task_get "$(focus_n)" mins "$FOCUS_FILE")
+		POMO_LEN=$POMO_FOCUS
+		[ "${1:-0}" -gt "${2:-0}" ] && POMO_LEN=$((($1 - $2) * 60))
+	fi
+	POMO_END=$((POMO_START + POMO_LEN))
+}
+
+# Add the focus time since POMO_START to the task. Recorded against the list
+# itself, so z undoes it and undo history stays valid.
+# ponytail: whole minutes, rounded; a stretch under 30 seconds is not counted.
+focus_log() {
+	[ "$POMO_KIND" = focus ] || return 0
+	m=$((($(date +%s) - POMO_START + 30) / 60))
+	pn=$(focus_n)
+	[ "$m" -gt 0 ] && [ -n "$pn" ] || return 0
+	POMO_START=$(date +%s)
+	sc=$CURV sf=$FILE
+	CURV=$FOCUS_BACK FILE=$FOCUS_FILE
+	snap
+	rewrite "$pn" spent "$m"
+	seal
+	FOCUS_LINE=$(task_get "$pn" line)
+	CURV=$sc FILE=$sf
+}
+
+focus_switch() {
+	focus_log
+	if [ "$POMO_KIND" = focus ]; then focus_start break; else focus_start focus; fi
+}
+
+# A timer that ran out rings and moves on to the other one.
+focus_tick() {
+	[ "$(date +%s)" -ge "$POMO_END" ] || return 0
+	printf '\a'
+	if [ "$POMO_KIND" = focus ]; then msg="focus done - $((POMO_BREAK / 60)) min break"; else msg='break over - back to focus'; fi
+	focus_switch
+}
+
+focus_close() {
+	focus_log
+	POMO_KIND=
+	open_list "$FOCUS_BACK" && cur=$FOCUS_CUR top=$FOCUS_TOP || go_home
+}
+
+draw_focus() {
+	size
+	pn=$(focus_n)
+	if [ -z "$pn" ]; then focus_close; msg='the task changed - focus ended'; draw; return; fi
+	now=$(date +%s)
+	left=$((POMO_END - now))
+	[ $left -lt 0 ] && left=0
+	run=0
+	[ "$POMO_KIND" = focus ] && run=$(((now - POMO_START) / 60))
+	set -- $(task_get "$pn" mins "$FOCUS_FILE")
+	h='space break'
+	[ "$POMO_KIND" = break ] && h='space focus'
+	out=$(TITLE=$(task_get "$pn" title "$FOCUS_FILE") LIST=$(short "$FOCUS_BACK") MODE=$POMO_KIND LEFT=$left TOTAL=$POMO_LEN \
+		SPENT=$((${2:-0} + run)) EST=${1:-0} ROWS=$ROWS COLS=$COLS MSG=$msg HINTS="$h|x done|esc back|? help|q quit" BAR=$(tabbar) \
+		awk "$FOCUS_AWK" </dev/null)
+	SPANS=${out%%"$NL"*}
+	printf '%s' "${out#*"$NL"}"
 }
 
 tui() {
@@ -727,12 +1147,20 @@ tui() {
 	# alt screen, no autowrap (long lines clip), hidden cursor, mouse reports
 	printf '%s' "${ESC}[?1049h${ESC}[?7l${ESC}[?25l$MOUSE_ON"
 	stty -icanon -echo min 1 time 0
-	cur=1 top=0 n=0 msg= UNDO_N=0 SEAL=0
+	cur=1 top=0 n=0 msg= UNDO_N=0 SEAL=0 POMO_KIND=
+	# TODONE_POMO="focus break" in minutes
+	set -- $(P=${TODONE_POMO:-25 5} awk 'BEGIN { n = split(ENVIRON["P"], a, /[ \/]+/); print int(a[1] * 60), int((n > 1 ? a[2] : 5) * 60) }')
+	POMO_FOCUS=${1:-1500} POMO_BREAK=${2:-300}
 	# no list here yet: start on home instead of an empty list
 	if [ -z "$forced" ] && ! find_local >/dev/null && [ ! -s "$FILE" ]; then go_home; else tab_add; fi
 	while :; do
-		if [ "$CURV" = "$HOMEV" ]; then draw_home; else draw; fi
+		[ "$CURV" = "$FOCUSV" ] && focus_tick
+		case $CURV in "$HOMEV") draw_home ;; "$CALV") draw_cal ;; "$FOCUSV") draw_focus ;; *) draw ;; esac
+		# the focus view wakes every second to redraw its timer
+		[ "$CURV" = "$FOCUSV" ] && stty min 0 time 10
 		k=$(key)
+		stty min 1 time 0
+		[ "$k" = TICK ] && continue
 		msg=
 		case $k in "MOUSE "*) mouse "${k#MOUSE }" ;; esac
 		if [ "$CURV" = "$HOMEV" ]; then
@@ -740,8 +1168,34 @@ tui() {
 			'' | enter | l | RIGHT) [ "$n" -gt 0 ] && open_list "$(home_val)"; k=IGNORE ;;
 			n) new_list; k=IGNORE ;;
 			D) [ "$n" -gt 0 ] && delete_home; k=IGNORE ;;
-			N | e | x | ' ' | d | / | E | c) k=IGNORE ;; # list-only keys
+			N | a | e | x | ' ' | d | t | h | p | '>' | '<' | / | E | c) k=IGNORE ;; # list-only keys
 			esac
+		elif [ "$CURV" = "$FOCUSV" ]; then
+			case $k in
+			' ' | space) focus_switch ;;
+			x)
+				focus_close
+				pn=$(focus_n)
+				[ -n "$pn" ] && [ "$(task_get "$pn" done)" = 0 ] && snap && rewrite "$pn" toggle && cur=$pn && msg="done: $(task_get "$pn" title)"
+				;;
+			p | "$ESC" | esc) focus_close ;;
+			q) focus_close ;;
+			esac
+			case $k in q | '?') ;; *) k=IGNORE ;; esac
+		elif [ "$CURV" = "$CALV" ]; then
+			case $k in
+			h | LEFT) cal_move days -1 ;;
+			l | RIGHT) cal_move days 1 ;;
+			j | DOWN | "$CN") cal_move days 7 ;;
+			k | UP | "$CP") cal_move days -7 ;;
+			'[') cal_move months -1 ;;
+			']') cal_move months 1 ;;
+			t) CAL_D=$(date +%F) ;;
+			'' | enter) cal_pick ;;
+			C | "$ESC") close_cal ;;
+			esac
+			# only the global keys go on
+			case $k in q | '?' | 0 | [1-9] | "$TAB" | BTAB | s | z) ;; *) k=IGNORE ;; esac
 		fi
 		case $k in
 		q) break ;;
@@ -765,9 +1219,42 @@ tui() {
 			done
 			[ $added -gt 0 ] && msg="added $added"
 			;;
+		a)
+			[ "$n" -gt 0 ] && {
+				ask 'New subtask' 'enter adds, esc cancels' '' "under: $(task_get "$cur" title)"
+				# the new subtask lands right after a subtask, or after the last one of a task
+				[ -n "$REPLY" ] && snap && rewrite "$cur" sub "$(oneline "$REPLY")" && cur=$(A=$cur awk "$AWK_LIB"'
+					iscb($0) {
+						i++
+						if (i == ENVIRON["A"] + 0 && /^[ \t]/) { print i + 1; f = 1; exit }
+						if (i > ENVIRON["A"] + 0 && !/^[ \t]/) { print i - 1; f = 1; exit }
+					}
+					END { if (!f) print i }' "$FILE")
+			}
+			;;
+		'>') [ "$n" -gt 0 ] && { snap; (rewrite "$cur" indent) 2>/dev/null || msg="can't indent: first task or already a subtask"; } ;;
+		'<') [ "$n" -gt 0 ] && { snap; (rewrite "$cur" outdent) 2>/dev/null || msg='not a subtask'; } ;;
+		t)
+			[ "$n" -gt 0 ] && {
+				old=$(task_get "$cur" due)
+				ask 'Due date' 'today, tom, fri, +3, 11-02 - empty clears' "$old" "$(task_get "$cur" title)"
+				ask_ok=$?
+				[ $ask_ok = 0 ] && [ "$REPLY" != "$old" ] && snap && set_due "$cur" "$REPLY"
+			}
+			;;
+		h)
+			[ "$n" -gt 0 ] && {
+				old=$(task_get "$cur" est)
+				ask 'Estimate' '2h, 30m, 1h30m - empty clears' "$old" "$(task_get "$cur" title)"
+				ask_ok=$?
+				[ $ask_ok = 0 ] && [ "$REPLY" != "$old" ] && snap && set_est "$cur" "$REPLY"
+			}
+			;;
+		p) [ "$n" -gt 0 ] && focus_open ;;
+		C) open_cal ;;
 		e)
 			[ "$n" -gt 0 ] && {
-				old=$(task_text)
+				old=$(task_get "$cur" title)
 				ask 'Edit task' 'enter saves, esc cancels' "$old"
 				[ -n "$REPLY" ] && [ "$REPLY" != "$old" ] && snap && rewrite "$cur" edit "$(oneline "$REPLY")"
 			}
@@ -776,7 +1263,7 @@ tui() {
 		d) [ "$n" -gt 0 ] && snap && rewrite "$cur" delete && msg='deleted (z undoes)' ;;
 		z) undo ;;
 		/)
-			awk '/^- \[[ xX]\] / { n++; print n "\t" substr($0, 7) "\t" }' "$FILE" >"$TD/c" 2>/dev/null
+			awk "$AWK_LIB"'iscb($0) { n++; print n "\t" meta(cbtext($0)) "\t" }' "$FILE" >"$TD/c" 2>/dev/null
 			pick 'Find task' "$TD/c" 0 0 && cur=$PICK
 			;;
 		s)
@@ -839,6 +1326,18 @@ e | edit)
 	;;
 x | tick) rewrite "${1:-}" toggle && list ;;
 d | rm) rewrite "${1:-}" delete && list ;;
+a | sub)
+	[ $# -ge 2 ] || die 'usage: a N TEXT'
+	n=$1
+	shift
+	rewrite "$n" sub "$(oneline "$*")" && list
+	;;
+due | est)
+	[ $# -eq 2 ] || die "usage: $cmd N VALUE"
+	msg=
+	if [ "$cmd" = due ]; then set_due "$1" "$2"; else set_est "$1" "$2"; fi || die "$msg"
+	list
+	;;
 s | lists) lists ;;
 D)
 	[ -f "$FILE" ] || die "no such list: $WS"
