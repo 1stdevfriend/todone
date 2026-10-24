@@ -9,6 +9,8 @@ Tasks are plain Markdown checkboxes (`- [ ] task`), so you can read and edit the
 
 - Lists per folder, a home inbox, or a `TODO.md` in the repo
 - A full-screen TUI with tabs, fuzzy pickers, undo and mouse support
+- Subtasks, due dates, time estimates and a month calendar of what is due
+- A focus timer per task that records the time you spend on it
 - A start screen with every list and its progress
 - One-shot commands for scripts and quick capture
 
@@ -40,6 +42,16 @@ The tab bar uses a powerline arrow, which needs a Nerd Font or Powerline font. W
 
 Set `TODONE_HOME` to move `~/.todone`.
 
+A list is plain Markdown, with fields in the [Obsidian Tasks](https://publish.obsidian.md/tasks/) emoji style:
+
+```markdown
+- [ ] Write launch post ⏱ 2h 📅 2026-11-02
+  - [x] Outline ⏳ 50m
+  - [ ] Pick a title ⏱ 30m
+```
+
+An indented task is a subtask of the one above it (one level). `📅` is the due date, `⏱` the estimate, `⏳` the time spent on it in focus mode.
+
 ## TUI
 
 Run `t` with no arguments. Every list you open becomes a tab in the bottom bar.
@@ -61,14 +73,22 @@ The menu items and lists are clickable too.
 
 ### Lists
 
+![a list with subtasks, estimates and due dates](demo/list.png)
+
 | key | action |
 |-----|--------|
 | `j` `k` / arrows, `g` `G` | move, top, bottom |
 | `n` | new task |
 | `N` | add many: one task per line, empty line or Esc ends (pasting works) |
+| `a` | add a subtask under the selected task |
+| `>` `<` | make it a subtask of the task above / a task again |
 | `e` | edit, prefilled with the current text |
 | `x` / space | tick / untick |
-| `d` | delete (no prompt; `z` brings it back) |
+| `d` | delete, with its subtasks (no prompt; `z` brings it back) |
+| `t` | due date: `today`, `tom`, `fri`, `+3`, `2w`, `11-02`, `2026-11-02`; empty clears |
+| `h` | estimate: `2h`, `1.5`, `30m`, `1h30m`; empty clears |
+| `p` | focus on the task (see below) |
+| `C` | calendar |
 | `z` | undo, as many steps as you like (per session; refuses if the file was changed outside todone) |
 | `/` | fuzzy-find a task |
 | `s` | fuzzy-open a list with live preview; type a new name to create one |
@@ -78,6 +98,22 @@ The menu items and lists are clickable too.
 | `E` | open the list in `$EDITOR` |
 | `?` | help |
 | `q` | quit |
+
+Due dates show as `today`, `tomorrow`, a weekday, `Nov 2`, or `3d late` in red. Time shows as spent/estimate, e.g. `40m/2h` (red once over the estimate); the header sums the estimated time still left.
+
+### Calendar
+
+![the calendar](demo/calendar.png)
+
+`C` opens a month grid of every list's due tasks: a dot marks a day with open tasks (red once it is past), and the selected day's tasks are listed under the grid, with anything overdue when the day is today. `h` `l` move a day, `j` `k` a week, `[` `]` a month, `t` jumps to today, Enter picks one of the day's tasks and opens it, and `C` or Esc goes back. Click a day to select it, click it again to open its tasks.
+
+### Focus
+
+![the focus timer](demo/focus.png)
+
+`p` opens the selected task on its own screen with a big timer. Focus runs for what is left of the task's estimate, or 25 minutes when it has none (or it is used up). `Space` switches between focus and a 5 minute break at any time; when a timer runs out, the bell rings and it switches by itself. `x` ticks the task off, Esc goes back to the list.
+
+Every stretch of focus is added to the task as `⏳` time spent (whole minutes), so it stays with the task for as long as it is in the list; `z` undoes the last one. Set other default lengths in minutes with `TODONE_POMO='50 10'`.
 
 In text boxes: Enter saves, Esc cancels, Backspace, Ctrl-U clears, Ctrl-W deletes a word.
 
@@ -89,6 +125,9 @@ The same actions as one-shot commands, for scripts and quick capture:
 
 ```sh
 t n "write the report"   # new
+t a 1 "find sources"     # subtask under task 1
+t due 1 fri              # due date (t due 1 '' clears)
+t est 1 2h               # estimate
 t l                      # list (plain `t` lists too when piped)
 t x 1                    # tick / untick
 t e 1 "write the draft"  # edit (t e alone opens $EDITOR)
