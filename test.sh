@@ -42,6 +42,12 @@ t -w sub due 1 2026-02-30 2>/dev/null && fail 'bad date should fail'
 t -w sub est 1 lots 2>/dev/null && fail 'bad estimate should fail'
 [ "$(t -w sub due 1 tom >/dev/null && grep -o '📅 .*' home/sub.md)" = "📅 $(date -v+1d +%F)" ] || fail 'relative due date'
 t -w sub d 1 >/dev/null; [ "$(cat home/sub.md)" = '- [ ] next' ] || fail "delete takes subtasks: $(cat home/sub.md)"
+# move a task with its subtasks; a subtask moves alone
+t -w mv n 'one' >/dev/null && t -w mv a 1 'kid' >/dev/null && t -w mv n 'two' >/dev/null
+t -w mv m 1 mv2 >/dev/null; [ "$(cat home/mv2.md)" = "$(printf -- '- [ ] one\n  - [ ] kid')" ] && [ "$(cat home/mv.md)" = '- [ ] two' ] || fail "move: $(cat home/mv.md home/mv2.md)"
+t -w mv2 m 2 mv >/dev/null; has home/mv.md '- [ ] kid'
+t -w mv m 1 mv 2>/dev/null && fail 'move to the same list should fail'
+t -w mv m 1 ../x 2>/dev/null && fail 'move to a bad name should fail'
 t -w gone n 'temp' >/dev/null && t -w gone D >/dev/null
 [ ! -e home/gone.md ] || fail 'D should remove the list'
 ls .Trash/todone-gone-*.md >/dev/null 2>&1 || fail 'D should move the list to the Trash'
@@ -105,6 +111,23 @@ mkdir -p "$TODONE_HOME"
 printf -- '- [ ] a ⏱ 2h\n- [ ] b\n' >"$TODONE_HOME/inbox.md"
 { keys a 'a1\n' G '>' g p; sleep 31; keys ' ' x C l '\033' q; } | pty sh "$T" >/dev/null 2>&1 || true
 [ "$(cat new/inbox.md)" = "$(printf -- '- [x] a ⏱ 2h ⏳ 1m\n  - [ ] a1\n  - [ ] b')" ] || fail "tui sub/focus: $(cat new/inbox.md)"
+
+# m moves a task to another list (picked by typing its name); one z undoes both files.
+export TODONE_HOME="$tmp/mv"
+mkdir -p "$TODONE_HOME"
+printf -- '- [ ] a\n  - [ ] a1\n- [ ] b\n' >"$TODONE_HOME/inbox.md"
+printf -- '- [ ] w\n' >"$TODONE_HOME/work.md"
+keys m wor '\n' q | pty sh "$T" >/dev/null 2>&1 || true
+[ "$(cat mv/inbox.md)" = '- [ ] b' ] && [ "$(cat mv/work.md)" = "$(printf -- '- [ ] w\n- [ ] a\n  - [ ] a1')" ] || fail "tui move: $(cat mv/*.md)"
+keys j m new '\n' z q | pty sh "$T" >/dev/null 2>&1 || true
+[ "$(cat mv/inbox.md)" = '- [ ] b' ] && [ ! -e mv/new.md ] || fail "move undo: $(cat mv/*.md)"
+
+# A timer that runs out keeps counting as overtime instead of starting a break.
+TODONE_POMO='0.05 1' && export TODONE_POMO
+{ keys p; sleep 5; keys '\033' q; } | pty sh "$T" >"$tmp/out" 2>&1 || true
+# (the hint reads "space focus" only while on a break)
+grep -q 'focus overtime' "$tmp/out" && ! grep -q 'space[^a-z]*mfocus' "$tmp/out" || fail 'focus should not auto-switch'
+unset TODONE_POMO
 
 # A folder with no list opens home; New list there starts this folder's list.
 export TODONE_HOME="$tmp/fresh-home"
