@@ -88,6 +88,7 @@ The menu items and lists are clickable too.
 | `t` | due date: `today`, `tom`, `fri`, `+3`, `2w`, `11-02`, `2026-11-02`; empty clears |
 | `h` | estimate: `2h`, `1.5`, `30m`, `1h30m`; empty clears |
 | `p` | focus on the task (see below) |
+| `m` | move to another list (with its subtasks); pick it or type a new name. One `z` undoes it |
 | `C` | calendar |
 | `z` | undo, as many steps as you like (per session; refuses if the file was changed outside todone) |
 | `/` | fuzzy-find a task |
@@ -111,7 +112,7 @@ Due dates show as `today`, `tomorrow`, a weekday, `Nov 2`, or `3d late` in red. 
 
 ![the focus timer](demo/focus.png)
 
-`p` opens the selected task on its own screen with a big timer. Focus runs for what is left of the task's estimate, or 25 minutes when it has none (or it is used up). `Space` switches between focus and a 5 minute break at any time; when a timer runs out, the bell rings and it switches by itself. `x` ticks the task off, Esc goes back to the list.
+`p` opens the selected task on its own screen with a big timer. Focus runs for what is left of the task's estimate, or 25 minutes when it has none (or it is used up). `Space` switches between focus and a 5 minute break whenever you want; nothing switches by itself. When a timer runs out the bell rings once and it keeps counting as overtime, since an estimate is a guess and the work may not be done. `x` ticks the task off, Esc goes back to the list.
 
 Every stretch of focus is added to the task as `⏳` time spent (whole minutes), so it stays with the task for as long as it is in the list; `z` undoes the last one. Set other default lengths in minutes with `TODONE_POMO='50 10'`.
 
@@ -128,6 +129,7 @@ t n "write the report"   # new
 t a 1 "find sources"     # subtask under task 1
 t due 1 fri              # due date (t due 1 '' clears)
 t est 1 2h               # estimate
+t m 1 inbox              # move to another list
 t l                      # list (plain `t` lists too when piped)
 t x 1                    # tick / untick
 t e 1 "write the draft"  # edit (t e alone opens $EDITOR)

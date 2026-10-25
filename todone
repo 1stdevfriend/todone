@@ -27,6 +27,7 @@ usage: todone [-w LIST] [COMMAND] [ARGS]
   d N            delete task N (and its subtasks)
   due N DATE     set the due date: today, tom, fri, +3, 11-02, 2026-11-02 ('' clears)
   est N TIME     set the estimate: 2h, 30m, 1h30m ('' clears)
+  m N LIST       move task N (and its subtasks) to another list
   s              show all lists
   D              delete this list (moves it to the Trash)
   init           keep this directory's list in ./TODO.md instead
@@ -171,6 +172,35 @@ set_est() {
 	rewrite "$1" est "$m"
 }
 
+# list_file LIST -> the file of a list given by name or by TODO.md path.
+list_file() {
+	case $1 in
+	/*) [ -f "$1" ] && printf '%s\n' "$1" ;;
+	*) valid_name "$1" && printf '%s\n' "$HOME_DIR/$1.md" ;;
+	esac
+}
+
+# move_task N LIST - append task N (with its subtasks; a subtask goes alone, as
+# a task) to LIST, then delete it here. In the TUI both files are undone by one z.
+move_task() {
+	to=$(list_file "$2") && [ "$to" != "$FILE" ] || { msg="can't move to '$2'"; return 1; }
+	b=$(N=$1 awk "$AWK_LIB"'
+		on { if (iscb($0) && /^[ \t]/) { print; next } exit }
+		iscb($0) && ++i == ENVIRON["N"] + 0 { on = !/^[ \t]/; sub(/^[ \t]+/, ""); print }' "$FILE" 2>/dev/null)
+	[ -n "$b" ] || { msg="no task #$1"; return 1; }
+	sc=$CURV sf=$FILE
+	CURV=$2 FILE=$to
+	snap
+	mkdir -p "$(dirname "$to")"
+	printf '%s\n' "$b" >>"$to"
+	seal
+	CURV=$sc FILE=$sf
+	snap
+	[ -z "${TD:-}" ] || : >"$TD/$UNDO_N.g"
+	rewrite "$1" delete
+	msg="moved to $(short "$2") (z undoes)"
+}
+
 untab() {
 	[ -f "$TABS" ] || return 0
 	grep -vxF -- "$1" "$TABS" >"$TABS.tmp"
@@ -205,7 +235,7 @@ MOUSE_ON="${ESC}[?1000h${ESC}[?1006h" MOUSE_OFF="${ESC}[?1000l${ESC}[?1006l"
 # Powerline arrow; needs a Nerd/Powerline font. TODONE_SEP='' for plain blocks.
 SEP=${TODONE_SEP-$(printf '\356\202\260')}
 # Shown right-aligned in order; hints that do not fit are dropped.
-HINTS='? help|n new|a sub|e edit|x tick|d del|t due|h est|p focus|C cal|z undo|N many|/ find|s open|tab next|c close|q quit'
+HINTS='? help|n new|a sub|e edit|x tick|d del|t due|h est|p focus|m move|C cal|z undo|N many|/ find|s open|tab next|c close|q quit'
 
 # One keypress; arrows come back as UP/DOWN/LEFT/RIGHT, shift-tab as BTAB,
 # Enter as '', a mouse press as "MOUSE button;col;row", anything else unknown as
@@ -941,6 +971,7 @@ delete_list() {
 # it (seal); z restores the newest snapshot only if the file still matches the
 # sealed copy, so edits made outside the TUI are never overwritten.
 snap() {
+	[ -n "${TD:-}" ] || return 0
 	UNDO_N=$((UNDO_N + 1)) SEAL=1
 	printf '%s\n' "$CURV" >"$TD/$UNDO_N.v"
 	printf '%s\n' "$FILE" >"$TD/$UNDO_N.f"
@@ -949,41 +980,45 @@ snap() {
 }
 
 seal() {
-	[ "$SEAL" = 1 ] || return 0
+	[ -n "${TD:-}" ] && [ "$SEAL" = 1 ] || return 0
 	SEAL=0
-	sf=$(cat "$TD/$UNDO_N.f")
+	af=$(cat "$TD/$UNDO_N.f")
 	rm -f "$TD/$UNDO_N.after"
-	[ -f "$sf" ] && cp "$sf" "$TD/$UNDO_N.after"
+	[ -f "$af" ] && cp "$af" "$TD/$UNDO_N.after"
 	return 0
 }
 
 undo() {
 	[ "$UNDO_N" -gt 0 ] || { msg='nothing to undo'; return 0; }
-	v=$(cat "$TD/$UNDO_N.v")
-	# a deleted TODO.md is reopened by path even though the file is gone
-	if [ "$v" != "$CURV" ]; then
+	v=$(cat "$TD/$UNDO_N.v") f=$(cat "$TD/$UNDO_N.f")
+	# a deleted TODO.md is reopened by path even though the file is gone;
+	# the second file of a move (UNDO_Q) is restored without switching to it
+	if [ -z "${UNDO_Q:-}" ] && [ "$v" != "$CURV" ]; then
 		case $v in
 		/*) use_local "$v" && tab_add && cur=1 top=0 ;;
 		*) open_list "$v" || return 0 ;;
 		esac
 	fi
 	if [ -f "$TD/$UNDO_N.after" ]; then
-		cmp -s "$TD/$UNDO_N.after" "$FILE"
+		cmp -s "$TD/$UNDO_N.after" "$f"
 	else
-		[ ! -s "$FILE" ]
+		[ ! -s "$f" ]
 	fi || {
 		UNDO_N=0
 		msg='list changed outside todone - undo history cleared'
 		return 0
 	}
 	if [ -f "$TD/$UNDO_N" ]; then
-		cp "$TD/$UNDO_N" "$FILE.tmp.$$" && mv "$FILE.tmp.$$" "$FILE"
+		cp "$TD/$UNDO_N" "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
 	else
-		: >"$FILE"
+		rm -f "$f"
 	fi
-	rm -f "$TD/$UNDO_N" "$TD/$UNDO_N.v" "$TD/$UNDO_N.f" "$TD/$UNDO_N.after"
+	g=
+	[ -f "$TD/$UNDO_N.g" ] && g=1
+	rm -f "$TD/$UNDO_N" "$TD/$UNDO_N.v" "$TD/$UNDO_N.f" "$TD/$UNDO_N.after" "$TD/$UNDO_N.g"
 	UNDO_N=$((UNDO_N - 1))
 	msg='undone'
+	[ -z "$g" ] || { UNDO_Q=1; undo; UNDO_Q=; }
 }
 
 # Hand the terminal to $EDITOR (may carry args, e.g. "code -w").
@@ -1004,7 +1039,8 @@ help() {
 		'e               edit           x space tick' \
 		'd               delete         z       undo' \
 		't               due date       h       estimate' \
-		'p               focus timer    C       calendar' \
+		'p               focus timer    m       move to list' \
+		'C               calendar' \
 		'/               find task      s       open or create list' \
 		'0               home           enter   open list (on home)' \
 		'1-9             jump to tab    tab     next tab (shift: prev)' \
@@ -1017,9 +1053,9 @@ help() {
 }
 
 # Focus view: one task and a big timer. Focus runs for what is left of the
-# task's estimate (TODONE_POMO's focus length when there is none left), then a
-# break; space switches between the two at any time. Each stretch of focus is
-# added to the task as ⏳ time spent.
+# task's estimate (TODONE_POMO's focus length when there is none left). When a
+# timer runs out it rings and counts on as overtime; only space switches
+# between focus and break. Each stretch of focus is added to the task as ⏳.
 FOCUSV=.focus
 FOCUS_AWK=$AWK_LIB'
 	# 3x5 pixel glyphs, two pixel rows per text row in half blocks, two columns per pixel
@@ -1047,14 +1083,16 @@ FOCUS_AWK=$AWK_LIB'
 		hint_layout()
 		print spans
 		printf "\033[H\033[2J"
+		over = left < 0; if (over) left = -left
 		clock = sprintf("%02d:%02d", int(left / 60), left % 60)
 		col = mode == "focus" ? "203" : "150"
 		y = int((rows - 2 - 13) / 2) + 1; if (y < 1) y = 1
 		center(y, "\033[38;5;243m" ENVIRON["LIST"], length(ENVIRON["LIST"]))
 		center(y + 2, "\033[1;38;5;189m" t, length(t))
-		center(y + 4, "\033[1;38;5;" col "m" mode, length(mode))
+		lab = mode (over ? " overtime" : "")
+		center(y + 4, "\033[1;38;5;" col "m" lab, length(lab))
 		for (r = 0; r < 3; r++) center(y + 6 + r, "\033[38;5;" col "m" big(clock, r), bigw(clock))
-		bw = bigw(clock); f = total ? int((total - left) * bw / total) : 0
+		bw = bigw(clock); f = over ? bw : (total ? int((total - left) * bw / total) : 0)
 		center(y + 10, "\033[38;5;" col "m" rep("━", f) "\033[38;5;238m" rep("━", bw - f), bw)
 		st = "spent " fmtmin(spent) (est ? " of " fmtmin(est) : "")
 		center(y + 12, "\033[38;5;245m" st, length(st))
@@ -1079,7 +1117,7 @@ focus_start() {
 		POMO_LEN=$POMO_FOCUS
 		[ "${1:-0}" -gt "${2:-0}" ] && POMO_LEN=$((($1 - $2) * 60))
 	fi
-	POMO_END=$((POMO_START + POMO_LEN))
+	POMO_END=$((POMO_START + POMO_LEN)) POMO_RANG=
 }
 
 # Add the focus time since POMO_START to the task. Recorded against the list
@@ -1105,12 +1143,13 @@ focus_switch() {
 	if [ "$POMO_KIND" = focus ]; then focus_start break; else focus_start focus; fi
 }
 
-# A timer that ran out rings and moves on to the other one.
+# A timer that ran out rings once and counts on; the estimate is a guess, not
+# a sign the work is done, so only space moves to the other timer.
 focus_tick() {
-	[ "$(date +%s)" -ge "$POMO_END" ] || return 0
+	[ -z "$POMO_RANG" ] && [ "$(date +%s)" -ge "$POMO_END" ] || return 0
+	POMO_RANG=1
 	printf '\a'
-	if [ "$POMO_KIND" = focus ]; then msg="focus done - $((POMO_BREAK / 60)) min break"; else msg='break over - back to focus'; fi
-	focus_switch
+	if [ "$POMO_KIND" = focus ]; then msg="time's up - keep going, or space for a break"; else msg="break's over - space to focus"; fi
 }
 
 focus_close() {
@@ -1125,7 +1164,6 @@ draw_focus() {
 	if [ -z "$pn" ]; then focus_close; msg='the task changed - focus ended'; draw; return; fi
 	now=$(date +%s)
 	left=$((POMO_END - now))
-	[ $left -lt 0 ] && left=0
 	run=0
 	[ "$POMO_KIND" = focus ] && run=$(((now - POMO_START) / 60))
 	set -- $(task_get "$pn" mins "$FOCUS_FILE")
@@ -1147,7 +1185,7 @@ tui() {
 	# alt screen, no autowrap (long lines clip), hidden cursor, mouse reports
 	printf '%s' "${ESC}[?1049h${ESC}[?7l${ESC}[?25l$MOUSE_ON"
 	stty -icanon -echo min 1 time 0
-	cur=1 top=0 n=0 msg= UNDO_N=0 SEAL=0 POMO_KIND=
+	cur=1 top=0 n=0 msg= UNDO_N=0 SEAL=0 POMO_KIND= POMO_RANG=
 	# TODONE_POMO="focus break" in minutes
 	set -- $(P=${TODONE_POMO:-25 5} awk 'BEGIN { n = split(ENVIRON["P"], a, /[ \/]+/); print int(a[1] * 60), int((n > 1 ? a[2] : 5) * 60) }')
 	POMO_FOCUS=${1:-1500} POMO_BREAK=${2:-300}
@@ -1168,7 +1206,7 @@ tui() {
 			'' | enter | l | RIGHT) [ "$n" -gt 0 ] && open_list "$(home_val)"; k=IGNORE ;;
 			n) new_list; k=IGNORE ;;
 			D) [ "$n" -gt 0 ] && delete_home; k=IGNORE ;;
-			N | a | e | x | ' ' | d | t | h | p | '>' | '<' | / | E | c) k=IGNORE ;; # list-only keys
+			N | a | e | x | ' ' | d | t | h | p | m | '>' | '<' | / | E | c) k=IGNORE ;; # list-only keys
 			esac
 		elif [ "$CURV" = "$FOCUSV" ]; then
 			case $k in
@@ -1251,6 +1289,12 @@ tui() {
 			}
 			;;
 		p) [ "$n" -gt 0 ] && focus_open ;;
+		m)
+			[ "$n" -gt 0 ] && {
+				list_cands | C=$CURV awk -F '\t' '$1 != ENVIRON["C"]' >"$TD/c"
+				pick "Move \"$(task_get "$cur" title)\" to (type a new name to create)" "$TD/c" 1 1 && move_task "$cur" "$PICK"
+			}
+			;;
 		C) open_cal ;;
 		e)
 			[ "$n" -gt 0 ] && {
@@ -1337,6 +1381,12 @@ due | est)
 	msg=
 	if [ "$cmd" = due ]; then set_due "$1" "$2"; else set_est "$1" "$2"; fi || die "$msg"
 	list
+	;;
+m | mv)
+	[ $# -eq 2 ] || die 'usage: m N LIST'
+	msg=
+	move_task "$1" "$2" || die "$msg"
+	echo "$msg" | sed 's/ (z undoes)//'
 	;;
 s | lists) lists ;;
 D)
