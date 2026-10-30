@@ -1,0 +1,6 @@
+# Only the web app is deployed.
+/*
+!/web
+/web/node_modules
+/web/.next
+/web/.env*

@@ -2,3 +2,4 @@
 # Impeccable review captures (local only)
 .impeccable/review/
 .impeccable/build/
+.vercel
