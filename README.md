@@ -153,10 +153,32 @@ t --version              # or t v
 
 The first run asks you to let your terminal control Reminders.
 
+## Web app
+
+Accounts, teams and lists in Postgres. Run everything with Docker:
+
+```sh
+docker compose up
+```
+
+Then open http://localhost:3000. Without Docker, `cd web && npm run local` runs Postgres inside Node (PGlite, data in `web/.pglite`), migrates it and starts `next dev`.
+
+For development against the Docker database, start only the database and run Next.js yourself:
+
+```sh
+docker compose up db
+cd web && cp .env.example .env.local   # set BETTER_AUTH_SECRET
+node --env-file=.env.local scripts/migrate.mts
+npm run dev
+```
+
+Each workspace (personal or a team) has its own integrations: a calendar feed for Google, Apple and Outlook calendars, Discord notifications, and a Notion database sync.
+
 ## Test
 
 ```sh
 sh test.sh
+cd web && npm test
 ```
 
 ## Author
