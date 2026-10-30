@@ -48,6 +48,15 @@ t -w mv m 1 mv2 >/dev/null; [ "$(cat home/mv2.md)" = "$(printf -- '- [ ] one\n  
 t -w mv2 m 2 mv >/dev/null; has home/mv.md '- [ ] kid'
 t -w mv m 1 mv 2>/dev/null && fail 'move to the same list should fail'
 t -w mv m 1 ../x 2>/dev/null && fail 'move to a bad name should fail'
+# rename a list: the file, its tab and its sync state (restarted empty) follow
+printf 'inbox\nmv\n' >home/.tabs && mkdir -p home/.sync && printf 'two\t0\t\n' >home/.sync/mv.tsv
+t -w mv R moved >/dev/null
+has home/moved.md '- [ ] two'
+[ ! -e home/mv.md ] && [ "$(cat home/.tabs)" = "$(printf 'inbox\nmoved')" ] || fail "rename: $(ls home) $(cat home/.tabs)"
+[ -f home/.sync/moved.tsv ] && [ ! -s home/.sync/moved.tsv ] && [ ! -e home/.sync/mv.tsv ] || fail 'rename sync state'
+t -w moved R mv2 2>/dev/null && fail 'rename onto an existing list should fail'
+t -w moved R ../x 2>/dev/null && fail 'rename to a bad name should fail'
+rm -f home/.tabs
 t -w gone n 'temp' >/dev/null && t -w gone D >/dev/null
 [ ! -e home/gone.md ] || fail 'D should remove the list'
 ls .Trash/todone-gone-*.md >/dev/null 2>&1 || fail 'D should move the list to the Trash'
@@ -60,6 +69,51 @@ cd sub && t n 'local task' >/dev/null && cd ..
 has TODO.md '- [ ] local task'
 has TODO.md 'notes stay'
 t l | grep -q '1 \[ \] local task' || fail 'local list'
+
+# sync: a fake osascript keeps each Reminders list as "title TAB done TAB due" lines.
+cd "$tmp" && mkdir -p bin rem
+cat >"$tmp/bin/osascript" <<'EOF'
+#!/bin/sh
+f="$REMDIR/$6.tsv"; touch "$f"
+[ "$5" = read ] && exec cat "$f"
+eval "${DURING:-}"
+printf '%s\n' "$7" | awk -F '\t' -v OFS='\t' -v f="$f" '
+	BEGIN { while ((getline l < f) > 0) { split(l, p, "\t"); o[++n] = p[1]; r[p[1]] = l } }
+	$1 == "add" { o[++n] = $2 } $1 == "del" { delete r[$2]; next } { r[$2] = $2 OFS $3 OFS $4 }
+	END { for (i = 1; i <= n; i++) if (o[i] in r) { print r[o[i]]; delete r[o[i]] } }' >"$f.new"
+mv "$f.new" "$f"
+EOF
+chmod +x "$tmp/bin/osascript"
+sy() { REMDIR="$tmp/rem" PATH="$tmp/bin:$PATH" sh "$T" -w sy sync >/dev/null; }
+eq() { [ "$(cat "$1")" = "$(printf -- "$2")" ] || fail "$1: $(cat "$1")"; }
+printf -- '- [ ] a ⏱ 1h\n- [ ] b\n  - [ ] kid\n- [ ] gone\n' >home/sy.md
+sy
+eq rem/sy.tsv 'a\t0\t\nb\t0\t\nb › kid\t0\t\ngone\t0\t'
+# Reminders: tick a, due date on kid, new subtask under b, new task; here: delete gone, tick b.
+printf 'a\t1\t\nb\t0\t\nb › kid\t0\t2026-11-02\nb › kid2\t0\t\ngone\t0\t\nnew\t0\t2026-12-01\n' >rem/sy.tsv
+t -w sy d 4 >/dev/null && t -w sy x 2 >/dev/null
+sy
+eq home/sy.md '- [x] a ⏱ 1h\n- [x] b\n  - [ ] kid 📅 2026-11-02\n  - [ ] kid2\n- [ ] new 📅 2026-12-01'
+eq rem/sy.tsv 'a\t1\t\nb\t1\t\nb › kid\t0\t2026-11-02\nb › kid2\t0\t\nnew\t0\t2026-12-01'
+# Deleting b in Reminders takes its subtasks here; a second sync changes nothing.
+printf 'a\t1\t\nb › kid\t0\t2026-11-02\nb › kid2\t0\t\nnew\t0\t2026-12-01\n' >rem/sy.tsv
+sy && sy
+eq home/sy.md '- [x] a ⏱ 1h\n- [ ] new 📅 2026-12-01'
+eq rem/sy.tsv 'a\t1\t\nnew\t0\t2026-12-01'
+# An edit made while Reminders is being updated survives; the next sync catches up.
+t -w sy x 2 >/dev/null
+DURING='printf -- "- [ ] mid\n" >>"$TODONE_HOME/sy.md"' REMDIR="$tmp/rem" PATH="$tmp/bin:$PATH" sh "$T" -w sy sync >/dev/null 2>&1 && fail 'edit during sync should be kept'
+has home/sy.md '- [ ] mid'
+sy
+eq rem/sy.tsv 'a\t1\t\nnew\t1\t2026-12-01\nmid\t0\t'
+# sync all: every synced list, minus deleted ones (which Reminders must not bring back).
+printf -- '- [ ] z\n' >home/sy2.md
+REMDIR="$tmp/rem" PATH="$tmp/bin:$PATH" sh "$T" -w sy2 sync >/dev/null
+printf 'a\t0\t\n' >rem/sy.tsv
+t -w sy2 D >/dev/null
+REMDIR="$tmp/rem" PATH="$tmp/bin:$PATH" sh "$T" sync all >/dev/null
+has home/sy.md '- [ ] a ⏱ 1h'
+[ ! -e home/sy2.md ] && [ ! -e home/.sync/sy2.tsv ] || fail 'sync all brought back a deleted list'
 
 # TUI smoke test through a pseudo-terminal (macOS `script`).
 pty() { script -q /dev/null "$@"; }
@@ -136,6 +190,11 @@ mkdir -p "$tmp/fresh" && cd "$tmp/fresh"
 # so the menu starts on row 10)
 keys "$(click 40 10)" '\n' 'hello\n' q | pty sh "$T" >/dev/null 2>&1 || true
 has "$TODONE_HOME/fresh.md" '- [ ] hello'
+# R on home renames the selected list.
+keys 0 R '\025' 'hi\n' q | pty sh "$T" >/dev/null 2>&1 || true
+has "$TODONE_HOME/hi.md" '- [ ] hello'
+grep -qx hi "$TODONE_HOME/.tabs" || fail 'home R should rename the tab'
+keys 0 R '\025' 'fresh\n' q | pty sh "$T" >/dev/null 2>&1 || true
 grep -qx fresh "$TODONE_HOME/.tabs" || fail 'new list should get a tab'
 # D on home deletes the selected list (the only one here).
 keys 0 D q | pty sh "$T" >/dev/null 2>&1 || true

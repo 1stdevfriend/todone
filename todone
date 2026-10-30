@@ -29,7 +29,11 @@ usage: todone [-w LIST] [COMMAND] [ARGS]
   est N TIME     set the estimate: 2h, 30m, 1h30m ('' clears)
   m N LIST       move task N (and its subtasks) to another list
   s              show all lists
+  R NAME         rename this list
   D              delete this list (moves it to the Trash)
+  sync [all]     two-way sync with the Reminders list of the same name
+                 (all: every list synced before)
+  autosync on|off  run "sync all" every 2 minutes in the background
   init           keep this directory's list in ./TODO.md instead
   h              this help
   v, --version   show the version
@@ -201,6 +205,29 @@ move_task() {
 	msg="moved to $(short "$2") (z undoes)"
 }
 
+# retab OLD NEW - rename a tab.
+retab() {
+	[ -f "$TABS" ] || return 0
+	OLD=$1 NEW=$2 awk '{ print ($0 == ENVIRON["OLD"] ? ENVIRON["NEW"] : $0) }' "$TABS" >"$TABS.tmp"
+	mv "$TABS.tmp" "$TABS"
+}
+
+# rename_list NEW - rename the open list (a ~/.todone one) and its tab.
+rename_list() {
+	case $CURV in /*) msg="a $LOCAL_NAME list takes its folder's name"; return 1 ;; esac
+	valid_name "$1" || { msg="bad list name: '$1'"; return 1; }
+	[ "$1" != "$CURV" ] || return 0
+	[ ! -e "$HOME_DIR/$1.md" ] || { msg="there is already a list '$1'"; return 1; }
+	[ ! -f "$FILE" ] || mv "$FILE" "$HOME_DIR/$1.md"
+	retab "$CURV" "$1"
+	# A synced list goes on syncing, to a new Reminders list under the new name:
+	# it starts from an empty state, or its tasks would read as deleted there.
+	st="$HOME_DIR/.sync/$CURV.tsv"
+	[ ! -f "$st" ] || { : >"$HOME_DIR/.sync/$1.tsv"; rm -f "$st"; }
+	msg="renamed $CURV to $1"
+	use_global "$1"
+}
+
 untab() {
 	[ -f "$TABS" ] || return 0
 	grep -vxF -- "$1" "$TABS" >"$TABS.tmp"
@@ -212,6 +239,177 @@ trash_list() {
 	[ -f "$FILE" ] || return 0
 	mkdir -p "$HOME/.Trash"
 	mv "$FILE" "$HOME/.Trash/todone-$(short "$CURV")-$(date +%Y%m%d-%H%M%S).md"
+}
+
+# ---------------------------------------------------------------- Reminders sync
+
+# JXA bridge to the Reminders app. "read LIST" prints "title TAB done TAB due" per
+# reminder, creating the list if it is missing; "apply LIST OPS" runs the
+# "add|set|del TAB title TAB done TAB due" lines that sync_reminders works out.
+REM_JS='function run(a) {
+	const R = Application("Reminders")
+	const ls = R.lists.whose({ name: a[1] })
+	if (!ls.length) { R.lists.push(R.List({ name: a[1] })); if (a[0] == "read") return "" }
+	const l = R.lists.whose({ name: a[1] })[0]
+	const pad = n => String(n).padStart(2, "0")
+	const ymd = d => d ? d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) : ""
+	const day = s => { const p = s.split("-"); return new Date(p[0], p[1] - 1, p[2]) }
+	if (a[0] == "read") {
+		const n = l.reminders.name(), c = l.reminders.completed(), d = l.reminders.dueDate()
+		return n.map((x, i) => [x.replace(/[\t\r\n]/g, " "), c[i] ? 1 : 0, ymd(d[i])].join("\t")).join("\n")
+	}
+	for (const op of a[2].split("\n")) {
+		const [k, t, done, due] = op.split("\t")
+		if (k == "add") {
+			const p = { name: t, completed: done == "1" }
+			if (due) p.alldayDueDate = day(due)
+			l.reminders.push(R.Reminder(p))
+			continue
+		}
+		const rs = l.reminders.whose({ name: t })
+		if (!rs.length) continue
+		const r = rs[0]
+		if (k == "del") { R.delete(r); continue }
+		r.completed = done == "1"
+		if (due) r.alldayDueDate = day(due)
+		else if (r.dueDate()) r.dueDate = null
+	}
+	return ""
+}'
+
+# Three-way merge of the local list (input) with Reminders ($REM) against the
+# state of the last sync ($BASE). Prints the new list; writes Reminders changes
+# to $OPS and the new state to $NEWBASE. A task is matched by its title; a
+# subtask's title in Reminders is "parent › child", since scripts can't make
+# real subtasks there. Done and the due date sync; the side that changed since
+# the last sync wins, the local side on a conflict.
+# ponytail: renaming a task is a delete + add (its estimate and spent time stay
+# only if renamed locally); two tasks with the same title: only the first syncs.
+SYNC_AWK='
+	function rd(path, A, D, U, O,   l, p, m) {
+		while ((getline l < path) > 0) {
+			if (split(l, p, "\t") < 2 || p[1] == "") continue
+			if (!(p[1] in A) && O != "") ORD[++NR_] = p[1]
+			A[p[1]] = 1; D[p[1]] = p[2] + 0; U[p[1]] = p[3]
+		}
+		close(path)
+	}
+	function pick(inb, l, b, r) { return inb && l == b ? r : l }
+	function op(a, k, d, u) { printf "%s\t%s\t%s\t%s\n", a, k, d, u > ENVIRON["OPS"] }
+	function keep(k, d, u) { printf "%s\t%s\t%s\n", k, d, u > ENVIRON["NEWBASE"] }
+	function line(ind, k, d, u) { DUE = u; EST = 0; SPENT = 0; return ind "- [" (d ? "x" : " ") "] " k tok() }
+	# New subtasks from Reminders go under their parent.
+	function kids(p,   j, k) {
+		if (p == "") return
+		for (j = 1; j <= NR_; j++) {
+			k = ORD[j]
+			if (index(k, p SEP) != 1 || (k in inL) || (k in inB) || (k in got)) continue
+			print line("  ", substr(k, length(p SEP) + 1), rD[k], rU[k]); got[k] = 1; keep(k, rD[k], rU[k])
+		}
+	}
+	BEGIN { SEP = " › "; rd(ENVIRON["BASE"], inB, bD, bU, ""); rd(ENVIRON["REM"], inR, rD, rU, 1) }
+	{ L[++n] = $0 }
+	iscb($0) {
+		t = meta(cbtext($0)); gsub(/\t/, " ", t)
+		if (!/^[ \t]/) par = t
+		k = /^[ \t]/ ? par SEP t : t
+		K[n] = k
+		if (k in inL) dup[n] = 1
+		else { inL[k] = 1; lD[k] = cbdone($0); lU[k] = DUE }
+	}
+	END {
+		for (i = 1; i <= n; i++) {
+			s = L[i]; k = K[i]; sb = s ~ /^[ \t]/
+			if (!sb) { kids(cur); cur = ""; skip = 0 }
+			# Subtasks of a task deleted in Reminders go with it.
+			if (skip && sb) { if (k in inR) op("del", k); continue }
+			if (k == "" || dup[i]) { print s; continue }
+			if ((k in inB) && !(k in inR)) { skip = !sb; continue }
+			if (!sb) cur = k
+			d = pick(k in inB, lD[k], bD[k], rD[k]); u = pick(k in inB, lU[k], bU[k], rU[k])
+			if (!(k in inR)) op("add", k, d, u)
+			else if (d != rD[k] || u != rU[k]) op("set", k, d, u)
+			keep(k, d, u)
+			if (d != lD[k] || u != lU[k]) { p = index(s, "["); t = meta(cbtext(s)); DUE = u; s = substr(s, 1, p) (d ? "x" : " ") "] " t tok() }
+			print s
+		}
+		kids(cur)
+		for (j = 1; j <= NR_; j++) {
+			k = ORD[j]
+			if ((k in inL) || (k in got)) continue
+			if (k in inB) op("del", k)
+			else { print line("", k, rD[k], rU[k]); keep(k, rD[k], rU[k]) }
+		}
+	}'
+
+# Two-way sync of the open list with the Reminders list of the same name.
+sync_reminders() {
+	command -v osascript >/dev/null || die 'sync needs macOS (osascript)'
+	name=$(short "$CURV")
+	state="$HOME_DIR/.sync/$(printf '%s' "$CURV" | tr / %).tsv"
+	mkdir -p "$HOME_DIR/.sync" "$(dirname "$FILE")"
+	[ -f "$FILE" ] || : >"$FILE"
+	t="$FILE.sync.$$"
+	trap 'rm -f "$t".?' EXIT
+	cp "$FILE" "$t.s"
+	osascript -l JavaScript -e "$REM_JS" read "$name" >"$t.r" ||
+		die "can't reach the Reminders list '$name'. Allow your terminal to control Reminders (System Settings > Privacy & Security > Automation), and check Reminders isn't showing a dialog."
+	: >"$t.o"
+	: >"$t.b"
+	BASE=$state REM=$t.r OPS=$t.o NEWBASE=$t.b awk "$AWK_LIB$SYNC_AWK" "$t.s" >"$t.l"
+	if [ -s "$t.o" ]; then
+		osascript -l JavaScript -e "$REM_JS" apply "$name" "$(cat "$t.o")" >/dev/null || die "can't update the Reminders list '$name'"
+	fi
+	# Edited meanwhile (say in the TUI): keep the edit and the old state; the
+	# next sync redoes this one, which is safe since every step can repeat.
+	cmp -s "$FILE" "$t.s" || die "$WS changed during the sync; run it again"
+	nl=$(diff "$t.s" "$t.l" | grep -c '^>' || true)
+	nr=$(wc -l <"$t.o" | tr -d ' ')
+	cmp -s "$t.s" "$t.l" || mv "$t.l" "$FILE"
+	mv "$t.b" "$state"
+	echo "synced $WS with Reminders list '$name': $nl here, $nr there"
+}
+
+# Sync every list synced before; a list deleted since stops syncing.
+sync_all() {
+	for s in "$HOME_DIR"/.sync/*.tsv; do
+		[ -e "$s" ] || continue
+		v=$(basename "$s" .tsv)
+		case $v in %*) v=$(printf '%s' "$v" | tr % /) ;; esac
+		f=$(list_file "$v") && [ -f "$f" ] || { rm -f "$s"; continue; }
+		(case $v in /*) use_local "$v" ;; *) use_global "$v" ;; esac; sync_reminders) || true
+	done
+}
+
+AGENT="$HOME/Library/LaunchAgents/com.todone.sync.plist"
+
+# autosync on|off - a launchd agent that runs "sync all" every 2 minutes.
+autosync() {
+	gui="gui/$(id -u)"
+	launchctl bootout "$gui/com.todone.sync" 2>/dev/null || true
+	case ${1:-} in
+	off) rm -f "$AGENT"; echo 'autosync off' ;;
+	on)
+		case $0 in /*) self=$0 ;; *) self="$PWD/$0" ;; esac
+		mkdir -p "$(dirname "$AGENT")" "$HOME_DIR/.sync"
+		cat >"$AGENT" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+	<key>Label</key><string>com.todone.sync</string>
+	<key>ProgramArguments</key><array><string>/bin/sh</string><string>$self</string><string>sync</string><string>all</string></array>
+	<key>EnvironmentVariables</key><dict><key>TODONE_HOME</key><string>$HOME_DIR</string></dict>
+	<key>StartInterval</key><integer>120</integer>
+	<key>RunAtLoad</key><true/>
+	<key>StandardOutPath</key><string>$HOME_DIR/.sync/log</string>
+	<key>StandardErrorPath</key><string>$HOME_DIR/.sync/log</string>
+</dict></plist>
+EOF
+		launchctl bootstrap "$gui" "$AGENT" || die "can't load $AGENT"
+		echo "autosync on: lists you have synced sync every 2 minutes (log: $(tilde "$HOME_DIR/.sync/log"))"
+		;;
+	*) die 'usage: autosync on|off' ;;
+	esac
 }
 
 lists() {
@@ -460,8 +658,7 @@ draw() {
 HOMEV=.home # CURV of the home page; list names cannot start with a dot
 HOME_HINTS='? help|enter open|n new list|C cal|D delete|s find|q quit'
 
-# Every known list as "value<TAB>label<TAB>file": this directory's TODO.md,
-# then tabs, then ~/.todone.
+# Every known list as "value<TAB>label<TAB>file", the last updated first.
 list_cands() {
 	{
 		l=$(find_local) && printf '%s\n' "$l"
@@ -469,10 +666,12 @@ list_cands() {
 		for f in "$HOME_DIR"/*.md; do [ -e "$f" ] && basename "$f" .md; done
 	} | awk '!seen[$0]++' | while IFS= read -r v; do
 		case $v in
-		/*) printf '%s\t%s\t%s\n' "$v" "$(tilde "$(dirname "$v")")" "$v" ;;
-		?*) printf '%s\t%s\t%s\n' "$v" "$v" "$HOME_DIR/$v.md" ;;
+		/*) f=$v w=$(tilde "$(dirname "$v")") ;;
+		?*) f="$HOME_DIR/$v.md" w=$v ;;
+		*) continue ;;
 		esac
-	done
+		printf '%s\t%s\t%s\t%s\n' "$(stat -f %m "$f" 2>/dev/null || echo 0)" "$v" "$w" "$f"
+	done | sort -s -k1,1nr | cut -f 2- # last updated first
 }
 
 # AstroNvim-style start screen: logo, version and credits, a menu of actions
@@ -586,10 +785,12 @@ CAL_AWK=$AWK_LIB'
 		yy = int((avail - nw - 5 - vis) / 2) + 1; if (yy < 1) yy = 1
 		gy = yy + 3
 		hint_layout()
-		print gx, gy, off, dim, nw, spans
+		print gx, gy, off, dim, nw, yy, spans
 		printf "\033[H\033[2J"
 		tl = mname(mo) " " y
 		printf "\033[%d;%dH\033[1;38;5;189m%s\033[0m", yy, int((cols - length(tl)) / 2) + 1, tl
+		# month arrows at the grid edges; clicking them pages like [ and ]
+		printf "\033[%d;%dH\033[38;5;245m‹\033[%d;%dH›\033[0m", yy, gx + 1, yy, gx + 33
 		printf "\033[%d;%dH\033[38;5;243m", yy + 2, gx
 		for (i = 0; i < 7; i++) printf " %s  ", substr("MoTuWeThFrSaSu", i * 2 + 1, 2)
 		for (dd = 1; dd <= dim; dd++) {
@@ -620,7 +821,7 @@ draw_cal() {
 	list_cands >"$TD/h"
 	out=$(D=$CAL_D TODAY=$(date +%F) ROWS=$ROWS COLS=$COLS MSG=$msg HINTS=$CAL_HINTS BAR=$(tabbar) awk "$CAL_AWK" "$TD/h")
 	set -- ${out%%"$NL"*}
-	CAL_GX=$1 CAL_GY=$2 CAL_OFF=$3 CAL_DIM=$4 CAL_NW=$5 SPANS=${6:-}
+	CAL_GX=$1 CAL_GY=$2 CAL_OFF=$3 CAL_DIM=$4 CAL_NW=$5 CAL_TY=$6 SPANS=${7:-}
 	printf '%s' "${out#*"$NL"}"
 }
 
@@ -704,7 +905,9 @@ mouse() {
 			:
 		elif [ "$CURV" = "$CALV" ]; then
 			r=$((MY - CAL_GY)) c=$((MX - CAL_GX))
-			if [ $r -ge 0 ] && [ $r -lt "$CAL_NW" ] && [ $c -ge 0 ] && [ $c -lt 35 ]; then
+			if [ "$MY" -eq "$CAL_TY" ] && [ $c -ge 0 ] && [ $c -le 3 ]; then k='['
+			elif [ "$MY" -eq "$CAL_TY" ] && [ $c -ge 31 ] && [ $c -le 34 ]; then k=']'
+			elif [ $r -ge 0 ] && [ $r -lt "$CAL_NW" ] && [ $c -ge 0 ] && [ $c -lt 35 ]; then
 				dd=$((r * 7 + c / 5 - CAL_OFF + 1))
 				if [ $dd -ge 1 ] && [ $dd -le "$CAL_DIM" ]; then
 					dd=$(printf '%s-%02d' "${CAL_D%-*}" $dd)
@@ -958,6 +1161,14 @@ delete_home() {
 }
 
 # Deleting a list lands on home, where the remaining lists are.
+rename_home() {
+	v=$(home_val)
+	ask 'Rename list' 'enter renames, esc cancels' "$(short "$v")"
+	[ -n "$REPLY" ] || return 0
+	case $v in /*) use_local "$v" ;; *) use_global "$v" ;; esac
+	rename_list "$REPLY" || :
+	go_home
+}
 delete_list() {
 	v=$CURV
 	snap
@@ -1045,6 +1256,7 @@ help() {
 		'0               home           enter   open list (on home)' \
 		'1-9             jump to tab    tab     next tab (shift: prev)' \
 		'c               close tab      D       delete list' \
+		'R               rename list' \
 		'E               open in $EDITOR   q    quit' \
 		'' \
 		'calendar: h l day, j k week, [ ] month, t today, C back' \
@@ -1206,6 +1418,7 @@ tui() {
 			'' | enter | l | RIGHT) [ "$n" -gt 0 ] && open_list "$(home_val)"; k=IGNORE ;;
 			n) new_list; k=IGNORE ;;
 			D) [ "$n" -gt 0 ] && delete_home; k=IGNORE ;;
+			R) [ "$n" -gt 0 ] && rename_home; k=IGNORE ;;
 			N | a | e | x | ' ' | d | t | h | p | m | '>' | '<' | / | E | c) k=IGNORE ;; # list-only keys
 			esac
 		elif [ "$CURV" = "$FOCUSV" ]; then
@@ -1296,6 +1509,10 @@ tui() {
 			}
 			;;
 		C) open_cal ;;
+		R)
+			ask 'Rename list' 'enter renames, esc cancels' "$(short "$CURV")"
+			[ -z "$REPLY" ] || rename_list "$REPLY" || :
+			;;
 		e)
 			[ "$n" -gt 0 ] && {
 				old=$(task_get "$cur" title)
@@ -1389,6 +1606,14 @@ m | mv)
 	echo "$msg" | sed 's/ (z undoes)//'
 	;;
 s | lists) lists ;;
+sync) if [ "${1:-}" = all ]; then sync_all; else sync_reminders; fi ;;
+autosync) autosync "$@" ;;
+R | rename)
+	[ $# -eq 1 ] || die 'usage: R NAME'
+	msg=
+	rename_list "$1" || die "$msg"
+	echo "$msg"
+	;;
 D)
 	[ -f "$FILE" ] || die "no such list: $WS"
 	trash_list
@@ -1403,10 +1628,7 @@ init)
 		# Move this directory's existing list into the repo instead of hiding it.
 		{ printf '# Todo\n\n'; cat "$of"; } >"$LOCAL_NAME.tmp.$$" && mv "$LOCAL_NAME.tmp.$$" "$LOCAL_NAME"
 		rm "$of"
-		if [ -f "$TABS" ]; then
-			OLD=$old NEW="$PWD/$LOCAL_NAME" awk '{ print ($0 == ENVIRON["OLD"] ? ENVIRON["NEW"] : $0) }' "$TABS" >"$TABS.tmp"
-			mv "$TABS.tmp" "$TABS"
-		fi
+		retab "$old" "$PWD/$LOCAL_NAME"
 		echo "created ./$LOCAL_NAME with the tasks from ~/.todone/$old.md"
 	else
 		printf '# Todo\n\n' >"$LOCAL_NAME"
