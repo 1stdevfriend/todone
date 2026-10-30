@@ -11,18 +11,16 @@ Set Padding 24
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 55ms
 
+# Only the full-screen app is recorded; the sample tasks are added off camera.
 Hide
 Type "source demo/setup.sh" Enter
-Type "clear" Enter
+Type "t n 'Write launch post' && t due 6 fri && t est 6 1h30m" Enter
+Type "clear && t" Enter
+Sleep 1.5s
 Show
 
-# Quick capture from the shell: the list is named after the folder
-Type "t n 'Write launch post'" Sleep 400ms Enter Sleep 1s
-Type "t due 6 fri && t est 6 1h30m" Sleep 300ms Enter Sleep 1s
-Type "t l" Sleep 300ms Enter Sleep 2s
-
 # The list view: subtasks, due dates, estimates
-Type "t" Enter Sleep 2s
+Sleep 1.5s
 Screenshot demo/list.png
 Type "j" Sleep 400ms Type "j" Sleep 400ms Type "x" Sleep 1.2s
 Type "G" Sleep 600ms Type "a" Sleep 700ms Type "Write the post body" Sleep 400ms Enter Sleep 1.2s
