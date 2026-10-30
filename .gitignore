@@ -3,3 +3,4 @@
 .impeccable/review/
 .impeccable/build/
 .vercel
+.env*
