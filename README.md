@@ -66,6 +66,7 @@ The start screen shows every list with its open tasks and progress. `t` opens he
 |-----|--------|
 | `j` `k` / arrows, `Enter` | pick a list, open it |
 | `n` | new list (named after the current folder by default), then its first task |
+| `R` | rename the selected list |
 | `D` | delete the selected list (moved to the Trash; `z` brings it back) |
 | `s`, `?`, `q` | open a list, help, quit |
 
@@ -95,6 +96,7 @@ The menu items and lists are clickable too.
 | `s` | fuzzy-open a list with live preview; type a new name to create one |
 | `0`, `1`–`9`, `Tab` / `Shift-Tab` | home, jump to a tab, cycle tabs |
 | `c` | close tab |
+| `R` | rename the list |
 | `D` | delete the list (moved to the Trash; `z` brings it back) and go home |
 | `E` | open the list in `$EDITOR` |
 | `?` | help |
@@ -135,10 +137,21 @@ t x 1                    # tick / untick
 t e 1 "write the draft"  # edit (t e alone opens $EDITOR)
 t d 1                    # delete
 t s                      # show all lists
+t R work                 # rename this list
 t D                      # delete this list (moved to the Trash)
 t init                   # keep this folder's list in ./TODO.md
 t --version              # or t v
 ```
+
+## Apple Reminders
+
+`t sync` syncs the current list both ways with the Reminders list of the same name (created if missing), so you can tick tasks off on your phone. Run it again whenever you want the two to catch up.
+
+- Titles, done and due dates sync. Estimates and focus time stay in todone.
+- A subtask shows up in Reminders as `parent › child`, because scripts can't create real Reminders subtasks.
+- If both sides changed a task since the last sync, todone's version wins. Renaming a task counts as deleting it and adding a new one.
+
+The first run asks you to let your terminal control Reminders.
 
 ## Test
 
