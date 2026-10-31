@@ -172,6 +172,12 @@ node --env-file=.env.local scripts/migrate.mts
 npm run dev
 ```
 
+### On your own server
+
+The same Compose file runs it on a server: Postgres and the app (bound to this machine only), a `reminders` service that sends push reminders every 10 minutes, and an optional Cloudflare Tunnel to publish it (`--profile tunnel` with `CLOUDFLARE_TUNNEL_TOKEN`; point the tunnel's public hostname at `http://web:3000`). Set `BETTER_AUTH_URL` to the public address and `BETTER_AUTH_SECRET` to a long random string.
+
+`.drone.yml` deploys it with Drone's Docker runner: every push is linted, tested and built, and a push to `main` rebuilds and restarts the Compose project on the host. Mark the repo **Trusted** in Drone (the deploy step uses the host's Docker socket) and add the settings as Drone secrets (`better_auth_secret`, `better_auth_url`, `postgres_password`, `vapid_public_key`, `vapid_private_key`, `cron_secret`, `cloudflare_tunnel_token`, and the optional GitHub and Google keys).
+
 Each workspace (personal or a team) has its own integrations: a calendar feed for Google, Apple and Outlook calendars, Discord notifications, and a Notion database sync.
 
 ## Test
