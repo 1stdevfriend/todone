@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { db } from "../lib/db.ts";
 import { type Task, keepIds, parse, serialize, validName, validTasks } from "@todone/sdk/tasks";
 
 type Row = { id: string; tasks: Task[]; version: number };
@@ -15,10 +15,9 @@ async function find(token: string, name: string) {
   return { ws, list: l.rows[0] ?? null };
 }
 
-// GET one list as Markdown; the ETag is its version.
-export async function GET(_: Request, ctx: RouteContext<"/api/sync/[token]/[list]">) {
-  const { token, list } = await ctx.params;
-  const f = await find(token, decodeURIComponent(list).replace(/\.md$/, ""));
+// GET one list as Markdown (`list` arrives decoded); the ETag is its version.
+export async function getList(token: string, list: string) {
+  const f = await find(token, list.replace(/\.md$/, ""));
   if (!f?.list) return new Response("Not found\n", { status: 404 });
   return new Response(serialize(f.list.tasks), {
     headers: { "content-type": "text/markdown; charset=utf-8", etag: `"${f.list.version}"` },
@@ -27,9 +26,8 @@ export async function GET(_: Request, ctx: RouteContext<"/api/sync/[token]/[list
 
 // PUT a list's Markdown: replaces its tasks (creating the list if new). Send If-Match with the ETag to refuse
 // overwriting someone else's newer edit (412).
-export async function PUT(req: Request, ctx: RouteContext<"/api/sync/[token]/[list]">) {
-  const { token, list } = await ctx.params;
-  const name = decodeURIComponent(list).replace(/\.md$/, "").trim();
+export async function putList(req: Request, token: string, list: string) {
+  const name = list.replace(/\.md$/, "").trim();
   const f = await find(token, name);
   if (!f) return new Response("Not found\n", { status: 404 });
   const body = await req.text();
