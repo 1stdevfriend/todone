@@ -15,12 +15,12 @@ The terminal app this project started as is retired; its last version is tagged 
 ## Run it
 
 ```sh
-cd web
+cd clients/apps/web
 npm install
 npm run local
 ```
 
-`npm run local` runs Postgres inside Node (PGlite, data in `web/.pglite`), migrates it and starts the app on http://localhost:3000. To run everything with Docker instead: `docker compose up`.
+`npm run local` runs Postgres inside Node (PGlite, data in `.pglite`), migrates it and starts the app on http://localhost:3000. To run everything with Docker instead: `docker compose up`.
 
 ### On your own server
 
@@ -31,7 +31,7 @@ The Compose file runs Postgres and the app (bound to this machine only), a `remi
 ## Test
 
 ```sh
-cd web && npm test
+cd clients/apps/web && npm test
 ```
 
 ## Author

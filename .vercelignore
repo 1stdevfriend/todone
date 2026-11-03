@@ -1,6 +1,10 @@
 # Only the web app is deployed.
 /*
-!/web
-/web/node_modules
-/web/.next
-/web/.env*
+!/clients
+/clients/*
+!/clients/apps
+/clients/apps/*
+!/clients/apps/web
+/clients/apps/web/node_modules
+/clients/apps/web/.next
+/clients/apps/web/.env*
