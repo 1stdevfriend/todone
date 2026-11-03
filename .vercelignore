@@ -1,5 +1,7 @@
-# Only the web app is deployed.
+# Only the web app and the sdk it builds from are deployed.
 /*
+!/sdk
+/sdk/node_modules
 !/clients
 /clients/*
 !/clients/apps
