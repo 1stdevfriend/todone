@@ -1,3 +1,5 @@
+> **Moved.** todone now lives in the [todone-today](https://github.com/todone-today) organisation, split into [server](https://github.com/todone-today/server), [clients](https://github.com/todone-today/clients), [sdk](https://github.com/todone-today/sdk) and [contributing-docs](https://github.com/todone-today/contributing-docs). This repo is archived; the terminal app's last version is tag `tui-final`.
+
 # todone
 
 **https://todone.today** · An open-source todo app: sticky notes you drag onto a day, a calendar to plan the week on, and teams to share it with. It works offline.
