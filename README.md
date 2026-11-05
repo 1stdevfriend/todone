@@ -1,6 +1,6 @@
 # todone
 
-An open-source todo app: sticky notes you drag onto a day, a calendar to plan the week on, and teams to share it with. It works offline.
+**https://todone.today** · An open-source todo app: sticky notes you drag onto a day, a calendar to plan the week on, and teams to share it with. It works offline.
 
 The code is organised like the [Bitwarden](https://github.com/bitwarden) repos, one folder per concern. Each folder stands on its own (its own `package.json`, lockfile and checks) and will become its own repo.
 
