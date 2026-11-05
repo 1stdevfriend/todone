@@ -1,7 +1,11 @@
-# Only the web app and the sdk it builds from are deployed.
+# Only the web app, the server and the sdk they build from are deployed (two Vercel projects, one per root).
 /*
 !/sdk
 /sdk/node_modules
+!/server
+/server/node_modules
+/server/.pglite
+/server/.env*
 !/clients
 /clients/*
 !/clients/apps
